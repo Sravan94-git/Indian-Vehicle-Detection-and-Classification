@@ -15,7 +15,7 @@ This project is a real-time vehicle detection and classification system specific
 | Category                  | Tools & Libraries                                   |
 | ------------------------- | --------------------------------------------------- |
 | **Programming Language** | Python                                              |
-| **Deep Learning Framework** | TensorFlow / PyTorch                              |
+| **Deep Learning Framework** | TensorFlow                            |
 | **Computer Vision** | OpenCV, NumPy                                       |
 | **Web Framework** | Flask                                               |
 
