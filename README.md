@@ -10,7 +10,7 @@ This project is a real-time vehicle detection and classification system specific
 * **User-Friendly Interface**: A Flask-based web application allows users to easily upload images or videos to see the system in action.
 * **Scalability**: Designed to handle multi-vehicle predictions in a single frame, making it suitable for dense traffic scenarios.
 
-## 💻 Tech Stack
+## Tech Stack
 
 | Category                  | Tools & Libraries                                   |
 | ------------------------- | --------------------------------------------------- |
