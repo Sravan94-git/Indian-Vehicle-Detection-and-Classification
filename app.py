@@ -1,31 +1,69 @@
+import os
+from pathlib import Path
+from secrets import token_urlsafe
+
 from flask import Flask, render_template, request, redirect, url_for, flash
 from ultralytics import YOLO
+import keras
 from tensorflow.keras.models import load_model
 from tensorflow.keras.activations import swish
+from tensorflow.keras.layers import InputLayer, MultiHeadAttention
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
 from tensorflow.keras.preprocessing.image import img_to_array
 import numpy as np
 import cv2
-import os
 import uuid
 import time
 from werkzeug.utils import secure_filename
 
+BASE_DIR = Path(__file__).resolve().parent
 app = Flask(__name__)
-app.secret_key = 'your_secret_key_here'
+app.config.update(
+    SECRET_KEY=os.environ.get('SECRET_KEY', token_urlsafe(32)),
+    MAX_CONTENT_LENGTH=100 * 1024 * 1024,
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE='Lax',
+)
 
 # Configuration
-UPLOAD_FOLDER = 'static/uploads'
-RESULT_FOLDER = 'static/results'
-CROP_FOLDER = 'static/crops'
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(RESULT_FOLDER, exist_ok=True)
-os.makedirs(CROP_FOLDER, exist_ok=True)
+UPLOAD_FOLDER = BASE_DIR / 'static' / 'uploads'
+RESULT_FOLDER = BASE_DIR / 'static' / 'results'
+CROP_FOLDER = BASE_DIR / 'static' / 'crops'
+for folder in (UPLOAD_FOLDER, RESULT_FOLDER, CROP_FOLDER):
+    folder.mkdir(parents=True, exist_ok=True)
 
 # Load models
+class CompatibleInputLayer(InputLayer):
+    def __init__(self, batch_shape=None, **kwargs):
+        if batch_shape is not None:
+            kwargs['batch_size'] = batch_shape[0]
+            kwargs['input_shape'] = batch_shape[1:]
+        super().__init__(**kwargs)
+
+
+class CompatibleMultiHeadAttention(MultiHeadAttention):
+    def __init__(self, seed=None, **kwargs):
+        super().__init__(**kwargs)
+
+
+keras.saving.get_custom_objects().update({
+    'swish': swish,
+    'InputLayer': CompatibleInputLayer,
+    'MultiHeadAttention': CompatibleMultiHeadAttention,
+})
+
+
 try:
-    yolo_model = YOLO('weights/yolov8n.pt')
-    classifier = load_model('weights/classifier.h5', compile=False, custom_objects={'swish': swish})
+    yolo_model = YOLO(str(BASE_DIR / 'weights' / 'yolov8n.pt'))
+    classifier = load_model(
+        BASE_DIR / 'weights' / 'classifier.h5',
+        compile=False,
+        custom_objects={
+            'swish': swish,
+            'InputLayer': CompatibleInputLayer,
+            'MultiHeadAttention': CompatibleMultiHeadAttention,
+        },
+    )
 except Exception as e:
     raise RuntimeError(f"Failed to load models: {str(e)}")
 
@@ -33,6 +71,14 @@ CLASS_NAMES = [
     'Motorized2wheeler', 'ambasador_taxi', 'autorickshaw', 'bicycle',
     'bus', 'car', 'minitruck', 'motarvan', 'rickshaw', 'toto', 'truck', 'van'
 ]
+
+
+@app.after_request
+def add_security_headers(response):
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'SAMEORIGIN'
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    return response
 
 @app.route('/')
 def index():
@@ -69,7 +115,7 @@ def process_image(file):
         file.save(filepath)
 
         # Process image
-        image = cv2.imread(filepath)
+        image = cv2.imread(str(filepath))
         if image is None:
             flash('Failed to read the uploaded image', 'error')
             return redirect(url_for('index'))
@@ -77,8 +123,6 @@ def process_image(file):
         # Detect vehicles
         detections = yolo_model(image)[0]
         vehicle_results = []
-        crop_paths = []
-
         for i, box in enumerate(detections.boxes):
             try:
                 x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
@@ -90,9 +134,8 @@ def process_image(file):
 
                 # Save cropped vehicle
                 crop_filename = f"crop_{i}_{filename}"
-                crop_path = os.path.join(CROP_FOLDER, crop_filename)
+                crop_path = CROP_FOLDER / crop_filename
                 cv2.imwrite(crop_path, crop)
-                crop_paths.append(crop_filename)
 
                 # Classify vehicle
                 resized = cv2.resize(crop, (128, 128))
@@ -128,7 +171,7 @@ def process_image(file):
 
         # Save output image
         output_filename = f"result_{filename}"
-        output_path = os.path.join(RESULT_FOLDER, output_filename)
+        output_path = RESULT_FOLDER / output_filename
         cv2.imwrite(output_path, output_image)
 
         return render_template('image_result.html',
@@ -145,19 +188,20 @@ def process_video(file):
     try:
         # Save uploaded video
         filename = f"{uuid.uuid4().hex}.mp4"
-        filepath = os.path.join(UPLOAD_FOLDER, filename)
+        filepath = UPLOAD_FOLDER / filename
         file.save(filepath)
 
         # Open video
-        cap = cv2.VideoCapture(filepath)
+        cap = cv2.VideoCapture(str(filepath))
         frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         frame_rate = int(cap.get(cv2.CAP_PROP_FPS))
 
         # Output video
-        result_path = os.path.join(RESULT_FOLDER, f"{uuid.uuid4().hex}.mp4")
+        result_filename = f"{uuid.uuid4().hex}.mp4"
+        result_path = RESULT_FOLDER / result_filename
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(result_path, fourcc, frame_rate, (frame_width, frame_height))
+        out = cv2.VideoWriter(str(result_path), fourcc, frame_rate, (frame_width, frame_height))
 
         # Performance tracking
         total_frames = 0
@@ -223,8 +267,8 @@ def process_video(file):
         print(f"Frames processed (with detections): {processed_frames}")
         print(f"Effective Processing FPS: {fps:.2f}")
 
-        return render_template('video_result.html', 
-                             result_video=result_path,
+        return render_template('video_result.html',
+                     result_video=url_for('static', filename=f'results/{result_filename}'),
                              fps=fps,
                              processed_frames=processed_frames,
                              elapsed_time=elapsed_time)
@@ -235,4 +279,8 @@ def process_video(file):
         return redirect(url_for('index'))
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(
+        host='0.0.0.0',
+        port=int(os.environ.get('PORT', 5000)),
+        debug=os.environ.get('FLASK_DEBUG') == '1',
+    )
