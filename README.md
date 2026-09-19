@@ -46,7 +46,7 @@ This repository includes `render.yaml`, `Procfile`, and `.python-version`. On Re
 The configured production command is:
 
 ```text
-gunicorn --workers 1 --threads 2 --timeout 300 app:app
+gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 2 --timeout 300 app:app
 ```
 
 One worker is intentional because the TensorFlow and PyTorch models are loaded into memory at startup. Set the Render service health check path to `/` if a health check is configured.

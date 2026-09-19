@@ -3,7 +3,7 @@ services:
     name: autosight
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn --workers 1 --threads 2 --timeout 300 app:app
+    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 2 --timeout 300 app:app
     envVars:
       - key: SECRET_KEY
         generateValue: true
