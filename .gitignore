@@ -1,7 +1,7 @@
-/.venv
-/__pycache__
-/.env
+/backend/.venv
+/**/__pycache__/
+/**/.env
 /.pytest_cache
-/static/uploads/*
-/static/results/*
-/static/crops/*
+/frontend/node_modules/
+/frontend/dist/
+/backend/generated/*
