@@ -67,6 +67,13 @@ def load_models():
     return yolo_model, classifier
 
 app = FastAPI(title="Vehix API", version="1.0.0")
+
+
+@app.on_event("startup")
+def warm_models():
+    load_models()
+
+
 allowed_origins = [origin.strip() for origin in os.getenv("FRONTEND_ORIGINS", "*").split(",") if origin.strip()]
 app.add_middleware(
     CORSMiddleware,
