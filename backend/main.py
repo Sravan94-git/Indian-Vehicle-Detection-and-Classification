@@ -47,16 +47,24 @@ keras.saving.get_custom_objects().update({
     "MultiHeadAttention": CompatibleMultiHeadAttention,
 })
 
-yolo_model = YOLO(str(BACKEND_DIR / "weights" / "yolov8n.pt"))
-classifier = load_model(
-    BACKEND_DIR / "weights" / "classifier.h5",
-    compile=False,
-    custom_objects={
-        "swish": swish,
-        "InputLayer": CompatibleInputLayer,
-        "MultiHeadAttention": CompatibleMultiHeadAttention,
-    },
-)
+yolo_model = None
+classifier = None
+
+
+def load_models():
+    global yolo_model, classifier
+    if yolo_model is None or classifier is None:
+        yolo_model = YOLO(str(BACKEND_DIR / "weights" / "yolov8n.pt"))
+        classifier = load_model(
+            BACKEND_DIR / "weights" / "classifier.h5",
+            compile=False,
+            custom_objects={
+                "swish": swish,
+                "InputLayer": CompatibleInputLayer,
+                "MultiHeadAttention": CompatibleMultiHeadAttention,
+            },
+        )
+    return yolo_model, classifier
 
 app = FastAPI(title="Vehix API", version="1.0.0")
 allowed_origins = [origin.strip() for origin in os.getenv("FRONTEND_ORIGINS", "*").split(",") if origin.strip()]
@@ -75,15 +83,17 @@ def media_url(request, folder, filename):
 
 
 def classify_crop(crop):
+    _, classifier_model = load_models()
     resized = cv2.resize(crop, (128, 128))
     normalized = resized.astype("float32") / 255.0
-    prediction = classifier.predict(np.expand_dims(normalized, axis=0), verbose=0)[0]
+    prediction = classifier_model.predict(np.expand_dims(normalized, axis=0), verbose=0)[0]
     class_id = int(np.argmax(prediction))
     return CLASS_NAMES[class_id], round(float(np.max(prediction)) * 100, 1)
 
 
 def detect_image(image, request):
-    detections = yolo_model(image, verbose=False)[0]
+    yolo_model_instance, _ = load_models()
+    detections = yolo_model_instance(image, verbose=False)[0]
     vehicles = []
     annotated = image.copy()
     height, width = image.shape[:2]
@@ -157,6 +167,7 @@ async def analyze_video(request: Request, file: UploadFile = File(...)):
     processed_frames = 0
     total_frames = 0
     started = time.time()
+    yolo_model_instance, _ = load_models()
 
     try:
         while capture.isOpened():
@@ -164,7 +175,7 @@ async def analyze_video(request: Request, file: UploadFile = File(...)):
             if not success:
                 break
             total_frames += 1
-            detections = yolo_model(frame, verbose=False)[0]
+            detections = yolo_model_instance(frame, verbose=False)[0]
             annotated = frame.copy()
             detected = False
             for box in detections.boxes:
