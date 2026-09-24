@@ -1,4 +1,6 @@
+import asyncio
 import os
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -7,6 +9,7 @@ import cv2
 import keras
 import numpy as np
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from tensorflow.keras.activations import swish
@@ -49,29 +52,33 @@ keras.saving.get_custom_objects().update({
 
 yolo_model = None
 classifier = None
+model_lock = threading.Lock()
 
 
 def load_models():
     global yolo_model, classifier
-    if yolo_model is None or classifier is None:
-        yolo_model = YOLO(str(BACKEND_DIR / "weights" / "yolov8n.pt"))
-        classifier = load_model(
-            BACKEND_DIR / "weights" / "classifier.h5",
-            compile=False,
-            custom_objects={
-                "swish": swish,
-                "InputLayer": CompatibleInputLayer,
-                "MultiHeadAttention": CompatibleMultiHeadAttention,
-            },
-        )
+    if yolo_model is not None and classifier is not None:
+        return yolo_model, classifier
+    with model_lock:
+        if yolo_model is None or classifier is None:
+            yolo_model = YOLO(str(BACKEND_DIR / "weights" / "yolov8n.pt"))
+            classifier = load_model(
+                BACKEND_DIR / "weights" / "classifier.h5",
+                compile=False,
+                custom_objects={
+                    "swish": swish,
+                    "InputLayer": CompatibleInputLayer,
+                    "MultiHeadAttention": CompatibleMultiHeadAttention,
+                },
+            )
     return yolo_model, classifier
 
 app = FastAPI(title="Vehix API", version="1.0.0")
 
 
 @app.on_event("startup")
-def warm_models():
-    load_models()
+async def warm_models():
+    asyncio.create_task(asyncio.to_thread(load_models))
 
 
 allowed_origins = [origin.strip() for origin in os.getenv("FRONTEND_ORIGINS", "*").split(",") if origin.strip()]
@@ -135,6 +142,8 @@ def detect_image(image, request):
 
 @app.get("/health")
 def health():
+    if yolo_model is None or classifier is None:
+        return JSONResponse(status_code=503, content={"status": "starting"})
     return {"status": "ok"}
 
 
