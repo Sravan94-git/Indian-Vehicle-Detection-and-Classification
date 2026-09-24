@@ -53,24 +53,32 @@ keras.saving.get_custom_objects().update({
 yolo_model = None
 classifier = None
 model_lock = threading.Lock()
+model_status = "starting"
+model_error = None
 
 
 def load_models():
-    global yolo_model, classifier
+    global yolo_model, classifier, model_status, model_error
     if yolo_model is not None and classifier is not None:
         return yolo_model, classifier
     with model_lock:
         if yolo_model is None or classifier is None:
-            yolo_model = YOLO(str(BACKEND_DIR / "weights" / "yolov8n.pt"))
-            classifier = load_model(
-                BACKEND_DIR / "weights" / "classifier.h5",
-                compile=False,
-                custom_objects={
-                    "swish": swish,
-                    "InputLayer": CompatibleInputLayer,
-                    "MultiHeadAttention": CompatibleMultiHeadAttention,
-                },
-            )
+            try:
+                yolo_model = YOLO(str(BACKEND_DIR / "weights" / "yolov8n.pt"))
+                classifier = load_model(
+                    BACKEND_DIR / "weights" / "classifier.h5",
+                    compile=False,
+                    custom_objects={
+                        "swish": swish,
+                        "InputLayer": CompatibleInputLayer,
+                        "MultiHeadAttention": CompatibleMultiHeadAttention,
+                    },
+                )
+                model_status = "ready"
+            except Exception as error:
+                model_status = "error"
+                model_error = str(error)
+                raise
     return yolo_model, classifier
 
 app = FastAPI(title="Vehix API", version="1.0.0")
@@ -78,7 +86,13 @@ app = FastAPI(title="Vehix API", version="1.0.0")
 
 @app.on_event("startup")
 async def warm_models():
-    asyncio.create_task(asyncio.to_thread(load_models))
+    async def warm_in_background():
+        try:
+            await asyncio.to_thread(load_models)
+        except Exception:
+            pass
+
+    asyncio.create_task(warm_in_background())
 
 
 allowed_origins = [origin.strip() for origin in os.getenv("FRONTEND_ORIGINS", "*").split(",") if origin.strip()]
@@ -142,9 +156,9 @@ def detect_image(image, request):
 
 @app.get("/health")
 def health():
-    if yolo_model is None or classifier is None:
-        return JSONResponse(status_code=503, content={"status": "starting"})
-    return {"status": "ok"}
+    if model_status == "error":
+        return JSONResponse(status_code=200, content={"status": "error", "detail": model_error})
+    return {"status": "ok" if model_status == "ready" else "starting"}
 
 
 @app.post("/api/analyze/image")

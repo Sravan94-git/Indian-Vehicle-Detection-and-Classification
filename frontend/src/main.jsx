@@ -25,10 +25,12 @@ function App() {
         const timeout = setTimeout(() => controller.abort(), 10000);
         try {
           const response = await fetch(`${API_URL}/health`, { signal: controller.signal, cache: "no-store" });
-          if (response.ok) {
+          const payload = await response.json();
+          if (payload.status === "ok") {
             if (!cancelled) setBackendState("ready");
             return;
           }
+          if (payload.status === "error") throw new Error(payload.detail || "The backend could not load its models.");
         } catch {
           // Render can take several requests to wake the service.
         } finally {
