@@ -1,6 +1,6 @@
-# AutoSight API
+# Vehix API
 
-FastAPI inference backend for the AutoSight React client.
+FastAPI inference backend for the Vehix React client.
 
 ## Local development
 
@@ -18,4 +18,4 @@ The API is available at `http://localhost:8000`, with interactive docs at `/docs
 
 Create a Docker Space and upload the contents of this `backend/` folder directly. The included `Dockerfile` starts the API automatically on port `7860`.
 
-Set `FRONTEND_ORIGINS` to the deployed Vercel URL, for example `https://autosight.vercel.app`. The frontend uses the resulting Space URL as its `VITE_API_URL` value in Vercel.
+Set `FRONTEND_ORIGINS` to the deployed Vercel URL, for example `https://vehix.vercel.app`. The frontend uses the resulting Space URL as its `VITE_API_URL` value in Vercel.

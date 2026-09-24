@@ -1,6 +1,6 @@
-# AutoSight
+# Vehix
 
-AutoSight is a vehicle detection and classification application with a React frontend and FastAPI inference backend.
+Vehix is a vehicle detection and classification application with a React frontend and FastAPI inference backend.
 
 ```text
 frontend/  React + Vite client deployed on Vercel

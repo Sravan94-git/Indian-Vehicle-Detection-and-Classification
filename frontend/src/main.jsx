@@ -37,7 +37,7 @@ function App() {
       if (!response.ok) throw new Error(payload.detail || "The analysis failed.");
       setResult(payload);
     } catch (requestError) {
-      setError(requestError.message || "Could not reach the AutoSight API.");
+      setError(requestError.message || "Could not reach the Vehix API.");
     } finally {
       setBusy(false);
     }
@@ -45,9 +45,9 @@ function App() {
 
   return (
     <main className="shell">
-      <nav><div className="brand"><span className="brand-mark" />AutoSight</div><div className="nav-note">Vehicle intelligence / 01</div></nav>
+      <nav><div className="brand"><span className="brand-mark" />Vehix</div><div className="nav-note">Vehicle intelligence / 01</div></nav>
       <section className="hero">
-        <div><div className="eyebrow">Indian road vision system</div><h1>See the road<br /><em>in detail.</em></h1><p className="hero-copy">Turn traffic imagery into a readable vehicle report. AutoSight detects vehicles first, then identifies their type with a dedicated classifier.</p></div>
+        <div><div className="eyebrow">Indian road vision system</div><h1>See the road<br /><em>in detail.</em></h1><p className="hero-copy">Turn traffic imagery into a readable vehicle report. Vehix detects vehicles first, then identifies their type with a dedicated classifier.</p></div>
         <form className="upload-panel" onSubmit={analyze}>
           <div className="panel-kicker">Start an analysis</div>
           <div className="mode-switch"><button type="button" className={mode === "image" ? "mode-btn active" : "mode-btn"} onClick={() => chooseMode("image")}>Image</button><button type="button" className={mode === "video" ? "mode-btn active" : "mode-btn"} onClick={() => chooseMode("video")}>Video</button></div>

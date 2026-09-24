@@ -1,6 +1,6 @@
-# AutoSight frontend
+# Vehix frontend
 
-React/Vite client for the FastAPI backend.
+React/Vite client for the Vehix FastAPI backend.
 
 ## Local development
 

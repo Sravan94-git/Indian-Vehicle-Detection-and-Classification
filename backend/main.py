@@ -58,7 +58,7 @@ classifier = load_model(
     },
 )
 
-app = FastAPI(title="AutoSight API", version="1.0.0")
+app = FastAPI(title="Vehix API", version="1.0.0")
 allowed_origins = [origin.strip() for origin in os.getenv("FRONTEND_ORIGINS", "*").split(",") if origin.strip()]
 app.add_middleware(
     CORSMiddleware,
