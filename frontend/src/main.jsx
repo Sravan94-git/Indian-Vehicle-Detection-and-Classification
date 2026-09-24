@@ -1,10 +1,12 @@
-import { StrictMode, useState } from "react";
+import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
 const API_URL = (import.meta.env.VITE_API_URL || "http://localhost:8000").replace(/\/$/, "");
 
 function App() {
+  const [backendState, setBackendState] = useState("checking");
+  const [retryKey, setRetryKey] = useState(0);
   const [mode, setMode] = useState("image");
   const [file, setFile] = useState(null);
   const [result, setResult] = useState(null);
@@ -12,6 +14,39 @@ function App() {
   const [error, setError] = useState("");
 
   const accept = mode === "image" ? "image/png,image/jpeg" : "video/mp4,video/quicktime,video/x-msvideo";
+
+  useEffect(() => {
+    let cancelled = false;
+    const deadline = Date.now() + 150000;
+
+    async function checkBackend() {
+      while (!cancelled && Date.now() < deadline) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 10000);
+        try {
+          const response = await fetch(`${API_URL}/health`, { signal: controller.signal, cache: "no-store" });
+          if (response.ok) {
+            if (!cancelled) setBackendState("ready");
+            return;
+          }
+        } catch {
+          // Render can take several requests to wake the service.
+        } finally {
+          clearTimeout(timeout);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+      }
+      if (!cancelled) setBackendState("error");
+    }
+
+    setBackendState("checking");
+    checkBackend();
+    return () => { cancelled = true; };
+  }, [retryKey]);
+
+  if (backendState !== "ready") {
+    return <BackendLoading state={backendState} onRetry={() => setRetryKey((key) => key + 1)} />;
+  }
 
   function chooseMode(nextMode) {
     setMode(nextMode);
@@ -60,6 +95,11 @@ function App() {
       <section className="methodology"><div className="section-heading"><div><div className="eyebrow">Methodology</div><h2>From pixels to insight.</h2></div><p>A two-stage pipeline keeps detection broad and classification specific.</p></div><div className="steps"><Step number="01 / INPUT" title="Capture" text="An image or video frame enters the analysis pipeline." /><Step number="02 / DETECT" title="Locate" text="YOLOv8 scans the scene and locates every vehicle." /><Step number="03 / CLASSIFY" title="Identify" text="Each crop is passed to the trained vehicle classifier." /><Step number="04 / REPORT" title="Understand" text="Confidence scores and annotated media become a report." /></div></section>
     </main>
   );
+}
+
+function BackendLoading({ state, onRetry }) {
+  const failed = state === "error";
+  return <main className="loading-screen"><div className="loading-card"><span className="brand-mark" /><div className="eyebrow">Vehix / startup check</div><h1>{failed ? "The API needs another try." : "Waking the vehicle lab."}</h1><p>{failed ? "The backend did not respond within two minutes. Render may still be starting the service." : "The analysis engine is starting on Render. This usually takes up to a minute on the first visit."}</p>{failed ? <button className="submit-btn" onClick={onRetry}>Try again →</button> : <div className="loading-indicator" aria-label="Waiting for the Vehix backend"><span /><span /><span /></div>}</div></main>;
 }
 
 function Step({ number, title, text }) { return <article className="step"><div className="step-number">{number}</div><h3>{title}</h3><p>{text}</p></article>; }

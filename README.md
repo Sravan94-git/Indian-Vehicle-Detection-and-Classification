@@ -8,17 +8,17 @@ backend/   FastAPI API deployed as a Docker Space on Hugging Face
 backend/weights/   classifier.h5 and yolov8n.pt model files
 ```
 
-## Hugging Face backend
+## Render backend
 
-Create a new **Docker Space** on Hugging Face. Upload the contents of the `backend/` folder into the Space. The `backend/Dockerfile` is designed for this exact folder layout and starts FastAPI on port `7860`.
+Create a new **Web Service** on Render and connect this repository. Set **Root Directory** to `backend`, choose **Docker** as the runtime, and deploy. Render will use the included `Dockerfile` and its `PORT` variable.
 
-In the Space settings, add this variable after you deploy the frontend:
+In the Render service's environment variables, add this after you deploy the frontend:
 
 ```text
-FRONTEND_ORIGINS=https://your-vercel-project.vercel.app
+FRONTEND_ORIGINS=https://your-frontend-domain.vercel.app
 ```
 
-The API exposes `/health`, `/docs`, `/api/analyze/image`, and `/api/analyze/video`.
+The API exposes `/health`, `/docs`, `/api/analyze/image`, and `/api/analyze/video`. Keep the Render service on a plan that allows enough memory for TensorFlow and YOLO models.
 
 ## Vercel frontend
 
@@ -27,12 +27,12 @@ Import this repository into Vercel and set **Root Directory** to `frontend`. Ver
 In Vercel, open **Project Settings -> Environment Variables** and add:
 
 ```text
-VITE_API_URL=https://your-huggingface-space.hf.space
+VITE_API_URL=https://your-render-service.onrender.com
 ```
 
-The value is the URL of your Hugging Face Space, without a trailing slash. Redeploy Vercel after adding or changing it.
+The value is the URL of your Render service, without a trailing slash. Redeploy Vercel after adding or changing it.
 
-After you know the Vercel URL, copy it into the Hugging Face `FRONTEND_ORIGINS` variable above and restart the Space.
+After you know the Vercel URL, copy it into Render's `FRONTEND_ORIGINS` variable above and restart the service.
 
 ## Local development
 
