@@ -107,48 +107,6 @@ Vehix/
 
 ***
 
-## 🌐 Deployment
-
-### Render backend
-
-Create a **Web Service** on Render from this repository with the following settings:
-
-```text
-Language: Docker
-Branch: main
-Root Directory: backend
-Health Check Path: /health
-```
-
-Add this environment variable in Render:
-
-```text
-FRONTEND_ORIGINS=https://your-frontend-domain.vercel.app
-```
-
-The deployed API exposes `/health`, `/docs`, `/api/analyze/image`, and `/api/analyze/video`.
-
-### Vercel frontend
-
-Import this repository into Vercel and configure:
-
-```text
-Framework Preset: Vite
-Root Directory: frontend
-Build Command: npm run build
-Output Directory: dist
-```
-
-Add this environment variable in Vercel:
-
-```text
-VITE_API_URL=https://your-render-service.onrender.com
-```
-
-The backend may take time to wake on Render's free tier. Vehix displays a startup screen while the API and ML models become ready.
-
-***
-
 ## 💻 Installation
 
 ### Clone the Repository
@@ -165,15 +123,7 @@ cd backend
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-```
-
-### Start the Backend
-
-From the repository root:
-
-```powershell
-$env:FRONTEND_ORIGINS = "http://localhost:5173"
-backend\.venv\Scripts\python.exe -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
+uvicorn main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 The API is available at `http://localhost:8000` and its interactive documentation is available at `http://localhost:8000/docs`.
@@ -226,4 +176,4 @@ This project is licensed under the MIT License.
 
 ## 👨‍💻 Author
 
-**Sravan**
+**Sravan Kumar Sunkara**
