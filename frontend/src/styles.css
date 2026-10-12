@@ -809,7 +809,7 @@ body::before {
   color: var(--text-muted);
 }
 
-/* Responsive */
+/* Responsive Design */
 @media (max-width: 900px) {
   .hero-layout {
     grid-template-columns: 1fr;
@@ -817,22 +817,151 @@ body::before {
   }
   .results-grid {
     grid-template-columns: 1fr;
+    gap: 20px;
   }
   .pipeline-steps {
     grid-template-columns: 1fr 1fr;
+    gap: 12px;
   }
 }
 
-@media (max-width: 580px) {
+@media (max-width: 640px) {
   .shell {
-    padding: 16px 16px 48px;
+    padding: 16px 14px 48px;
+  }
+  .navbar {
+    margin-bottom: 28px;
+    padding-bottom: 18px;
+  }
+  .hero-heading {
+    font-size: clamp(24px, 6.5vw, 32px);
+    margin-bottom: 14px;
+  }
+  .hero-description {
+    font-size: 14px;
+    line-height: 1.55;
+    margin-bottom: 20px;
+  }
+  .taxonomy-preview {
+    gap: 5px;
+  }
+  .taxonomy-tag {
+    font-size: 10px;
+    padding: 2px 7px;
+  }
+  .panel {
+    padding: 18px 14px;
+    border-radius: 8px;
+  }
+  .panel-header {
+    margin-bottom: 14px;
+  }
+  .segmented-control {
+    width: 100%;
+  }
+  .segmented-btn {
+    flex: 1;
+    text-align: center;
+    padding: 7px 10px;
+    font-size: 12px;
+  }
+  .dropzone {
+    padding: 24px 14px;
+  }
+  .dropzone-icon {
+    width: 28px;
+    height: 28px;
+    margin-bottom: 8px;
+  }
+  .dropzone-label {
+    font-size: 12.5px;
+  }
+  .btn-submit {
+    min-height: 44px;
+    font-size: 13px;
+    margin-top: 14px;
+  }
+  .results-section {
+    margin-top: 40px;
+    padding-top: 24px;
+  }
+  .results-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    margin-bottom: 18px;
+  }
+  .results-title {
+    font-size: 16px;
+  }
+  .metrics-row {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+    margin-bottom: 20px;
+  }
+  .metric-card:last-child:nth-child(odd) {
+    grid-column: span 2;
+  }
+  .metric-card {
+    padding: 12px 14px;
+  }
+  .metric-value {
+    font-size: 18px;
+  }
+  .pipeline-section {
+    margin-top: 48px;
+    padding-top: 28px;
   }
   .pipeline-steps {
     grid-template-columns: 1fr;
+    gap: 10px;
   }
   .footer {
+    margin-top: 48px;
+    padding-top: 18px;
     flex-direction: column;
-    gap: 8px;
+    gap: 6px;
     align-items: flex-start;
+  }
+  .loading-dialog {
+    padding: 30px 20px;
+    margin: 16px;
+  }
+  .loading-spinner-ring {
+    width: 32px;
+    height: 32px;
+    margin-bottom: 16px;
+  }
+  .loading-title {
+    font-size: 15px;
+  }
+  .loading-description {
+    font-size: 12.5px;
+    margin-bottom: 16px;
+  }
+}
+
+@media (max-width: 440px) {
+  .vehicle-card {
+    padding: 10px;
+    gap: 10px;
+  }
+  .vehicle-crop {
+    width: 58px;
+    height: 52px;
+  }
+  .vehicle-name {
+    font-size: 12px;
+  }
+  .confidence-name {
+    width: 65px;
+    font-size: 10px;
+  }
+  .confidence-pct {
+    width: 36px;
+    font-size: 10px;
+  }
+  .file-name {
+    max-width: 160px;
   }
 }
