@@ -12,10 +12,9 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from tensorflow.keras.activations import swish
-from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
-from tensorflow.keras.layers import InputLayer, MultiHeadAttention
-from tensorflow.keras.models import load_model
+from keras.activations import swish
+from keras.layers import InputLayer, MultiHeadAttention
+from keras.models import load_model
 from ultralytics import YOLO
 
 BACKEND_DIR = Path(__file__).resolve().parent
