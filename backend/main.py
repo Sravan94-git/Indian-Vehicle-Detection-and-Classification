@@ -30,6 +30,10 @@ CLASS_NAMES = [
     "bus", "car", "minitruck", "motarvan", "rickshaw", "toto", "truck", "van",
 ]
 
+# COCO vehicle classes: bicycle (1), car (2), motorcycle (3), bus (5), truck (7).
+# Explicitly excludes humans (COCO class 0: person) and other non-vehicle entities.
+COCO_VEHICLE_CLASSES = [1, 2, 3, 5, 7]
+
 
 class CompatibleInputLayer(InputLayer):
     def __init__(self, batch_shape=None, **kwargs):
@@ -95,19 +99,25 @@ async def warm_models():
     asyncio.create_task(warm_in_background())
 
 
-allowed_origins = [origin.strip() for origin in os.getenv("FRONTEND_ORIGINS", "*").split(",") if origin.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_credentials=allowed_origins != ["*"],
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 app.mount("/media", StaticFiles(directory=BACKEND_DIR / "generated"), name="media")
 
 
-def media_url(request, folder, filename):
-    return f"{str(request.base_url).rstrip('/')}/media/{folder}/{filename}"
+def media_url(request: Request, folder: str, filename: str) -> str:
+    base = str(request.base_url).rstrip("/")
+    proto = request.headers.get("x-forwarded-proto")
+    if proto:
+        scheme = proto.split(",")[0].strip()
+        if scheme and base.startswith("http://"):
+            base = f"{scheme}://{base[7:]}"
+    return f"{base}/media/{folder}/{filename}"
 
 
 def classify_crop(crop):
@@ -121,25 +131,40 @@ def classify_crop(crop):
 
 def detect_image(image, request):
     yolo_model_instance, _ = load_models()
-    detections = yolo_model_instance(image, verbose=False)[0]
+    # Explicitly filter YOLO to only detect vehicle categories (excluding humans/pedestrians)
+    detections = yolo_model_instance(
+        image,
+        classes=COCO_VEHICLE_CLASSES,
+        conf=0.25,
+        verbose=False,
+    )[0]
     vehicles = []
     annotated = image.copy()
     height, width = image.shape[:2]
 
-    for index, box in enumerate(detections.boxes):
+    detected_count = 0
+    for box in detections.boxes:
+        cls_id = int(box.cls[0].item())
+        if cls_id not in COCO_VEHICLE_CLASSES:
+            continue
+
+        detection_confidence = round(float(box.conf[0].item()) * 100, 1)
+        if detection_confidence < 25.0:
+            continue
+
         x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
         x1, y1 = max(0, x1), max(0, y1)
         x2, y2 = min(width, x2), min(height, y2)
         crop = image[y1:y2, x1:x2]
-        if crop.size == 0:
+        if crop.size == 0 or (x2 - x1 < 12) or (y2 - y1 < 12):
             continue
 
         label, classification_confidence = classify_crop(crop)
+        detected_count += 1
         crop_filename = f"{uuid.uuid4().hex}.jpg"
         cv2.imwrite(str(CROP_DIR / crop_filename), crop)
-        detection_confidence = round(float(box.conf[0].item()) * 100, 1)
         vehicle = {
-            "number": index + 1,
+            "number": detected_count,
             "label": label,
             "classification_confidence": classification_confidence,
             "detection_confidence": detection_confidence,
@@ -148,27 +173,73 @@ def detect_image(image, request):
         }
         vehicles.append(vehicle)
         cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        cv2.putText(annotated, f"{index + 1}. {label} {detection_confidence}%", (x1, max(20, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.putText(
+            annotated,
+            f"{detected_count}. {label} {detection_confidence}%",
+            (x1, max(20, y1 - 10)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 255, 0),
+            2,
+        )
 
     vehicles.sort(key=lambda item: item["detection_confidence"], reverse=True)
+    for idx, v in enumerate(vehicles):
+        v["number"] = idx + 1
     return annotated, vehicles
 
 
-@app.get("/health")
+@app.api_route("/", methods=["GET", "HEAD"])
+def root():
+    return {
+        "status": "ok",
+        "service": "Vehix API",
+        "version": "1.0.0",
+        "model_status": model_status,
+        "endpoints": {
+            "health": "/health",
+            "docs": "/docs",
+            "analyze_image": "/api/analyze/image",
+            "analyze_video": "/api/analyze/video",
+        },
+    }
+
+
+@app.api_route("/favicon.ico", methods=["GET", "HEAD"])
+def favicon():
+    return JSONResponse(status_code=204, content=None)
+
+
+@app.api_route("/health", methods=["GET", "HEAD"])
+@app.api_route("/api/health", methods=["GET", "HEAD"])
 def health():
     if model_status == "error":
         return JSONResponse(status_code=200, content={"status": "error", "detail": model_error})
     return {"status": "ok" if model_status == "ready" else "starting"}
 
 
+@app.exception_handler(404)
+async def not_found_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=404,
+        content={
+            "detail": f"Path '{request.url.path}' not found.",
+            "hint": "Check /docs for valid endpoints or call /health for service status.",
+            "available_endpoints": ["/", "/health", "/api/health", "/docs", "/api/analyze/image", "/api/analyze/video"],
+        },
+    )
+
+
 @app.post("/api/analyze/image")
+@app.post("/analyze/image")
 async def analyze_image(request: Request, file: UploadFile = File(...)):
-    if file.content_type not in {"image/jpeg", "image/png"}:
-        raise HTTPException(status_code=415, detail="Upload a JPEG or PNG image")
+    valid_image_types = {"image/jpeg", "image/png", "image/webp", "image/jpg"}
+    if file.content_type and file.content_type not in valid_image_types and not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=415, detail="Upload a JPEG, PNG, or WEBP image")
     contents = await file.read()
     image = cv2.imdecode(np.frombuffer(contents, np.uint8), cv2.IMREAD_COLOR)
     if image is None:
-        raise HTTPException(status_code=400, detail="The uploaded image could not be read")
+        raise HTTPException(status_code=400, detail="The uploaded image could not be read or decoded")
 
     annotated, vehicles = detect_image(image, request)
     result_filename = f"{uuid.uuid4().hex}.jpg"
@@ -181,6 +252,7 @@ async def analyze_image(request: Request, file: UploadFile = File(...)):
 
 
 @app.post("/api/analyze/video")
+@app.post("/analyze/video")
 async def analyze_video(request: Request, file: UploadFile = File(...)):
     if file.content_type not in {"video/mp4", "video/quicktime", "video/x-msvideo"}:
         raise HTTPException(status_code=415, detail="Upload an MP4, MOV, or AVI video")
@@ -205,17 +277,25 @@ async def analyze_video(request: Request, file: UploadFile = File(...)):
             if not success:
                 break
             total_frames += 1
-            detections = yolo_model_instance(frame, verbose=False)[0]
+            detections = yolo_model_instance(
+                frame,
+                classes=COCO_VEHICLE_CLASSES,
+                conf=0.25,
+                verbose=False,
+            )[0]
             annotated = frame.copy()
             detected = False
             for box in detections.boxes:
+                cls_id = int(box.cls[0].item())
+                if cls_id not in COCO_VEHICLE_CLASSES:
+                    continue
                 x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
                 crop = frame[max(0, y1):max(0, y2), max(0, x1):max(0, x2)]
-                if crop.size == 0:
+                if crop.size == 0 or (x2 - x1 < 12) or (y2 - y1 < 12):
                     continue
                 label, _ = classify_crop(crop)
                 cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(annotated, label, (x1, max(20, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (36, 255, 12), 2)
+                cv2.putText(annotated, label, (x1, max(20, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (36, 255, 12), 2)
                 detected = True
             if detected:
                 processed_frames += 1

@@ -1,116 +1,521 @@
-import { StrictMode, useEffect, useState } from "react";
+import { StrictMode, useEffect, useState, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
-const API_URL = (import.meta.env.VITE_API_URL || "http://localhost:8000").replace(/\/$/, "");
+const rawApiUrl = import.meta.env.VITE_API_URL;
+const API_URL = rawApiUrl
+  ? rawApiUrl.replace(/\/$/, "")
+  : (import.meta.env.DEV ? "" : "http://127.0.0.1:8000");
+
+const VEHICLE_CLASSES = [
+  "Motorized 2-wheeler", "Ambassador taxi", "Autorickshaw", "Bicycle",
+  "Bus", "Car", "Minitruck", "Motorvan", "Rickshaw", "Toto (E-rickshaw)", "Truck", "Van",
+];
+
+function formatBytes(bytes) {
+  if (!bytes) return "0 B";
+  const k = 1024;
+  const sizes = ["B", "KB", "MB", "GB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
+}
 
 function App() {
-  const [backendState, setBackendState] = useState("checking");
-  const [retryKey, setRetryKey] = useState(0);
+  const [backendStatus, setBackendStatus] = useState("checking"); // 'checking' | 'ready' | 'error'
   const [mode, setMode] = useState("image");
   const [file, setFile] = useState(null);
+  const [previewUrl, setPreviewUrl] = useState(null);
   const [result, setResult] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
+  const [isDragOver, setIsDragOver] = useState(false);
+  const [retryTrigger, setRetryTrigger] = useState(0);
 
-  const accept = mode === "image" ? "image/png,image/jpeg" : "video/mp4,video/quicktime,video/x-msvideo";
+  const fileInputRef = useRef(null);
+  const acceptTypes = mode === "image" ? "image/png,image/jpeg,image/webp" : "video/mp4,video/quicktime,video/x-msvideo";
 
+  // Health check on mount and retry
   useEffect(() => {
-    let cancelled = false;
-    const deadline = Date.now() + 150000;
+    let isCancelled = false;
+    let pollTimeout;
 
-    async function checkBackend() {
-      while (!cancelled && Date.now() < deadline) {
+    async function checkHealth() {
+      try {
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 10000);
+        const timer = setTimeout(() => controller.abort(), 6000);
+        let res;
+        const endpoint = API_URL ? `${API_URL}/health` : "/health";
         try {
-          const response = await fetch(`${API_URL}/health`, { signal: controller.signal, cache: "no-store" });
-          const payload = await response.json();
-          if (payload.status === "ok") {
-            if (!cancelled) setBackendState("ready");
+          res = await fetch(endpoint, { signal: controller.signal, cache: "no-store" });
+        } catch (initialErr) {
+          if (!API_URL || API_URL.includes("localhost")) {
+            res = await fetch("http://127.0.0.1:8000/health", { signal: controller.signal, cache: "no-store" });
+          } else {
+            throw initialErr;
+          }
+        }
+        clearTimeout(timer);
+
+        if (res && res.ok) {
+          const data = await res.json();
+          if (data.status === "ok") {
+            if (!isCancelled) setBackendStatus("ready");
             return;
           }
-          if (payload.status === "error") throw new Error(payload.detail || "The backend could not load its models.");
-        } catch {
-          // Render can take several requests to wake the service.
-        } finally {
-          clearTimeout(timeout);
         }
-        await new Promise((resolve) => setTimeout(resolve, 3000));
+      } catch {
+        // Backend might still be spinning up
       }
-      if (!cancelled) setBackendState("error");
+
+      if (!isCancelled) {
+        pollTimeout = setTimeout(checkHealth, 3500);
+      }
     }
 
-    setBackendState("checking");
-    checkBackend();
-    return () => { cancelled = true; };
-  }, [retryKey]);
+    setBackendStatus("checking");
+    checkHealth();
 
-  if (backendState !== "ready") {
-    return <BackendLoading state={backendState} onRetry={() => setRetryKey((key) => key + 1)} />;
-  }
+    return () => {
+      isCancelled = true;
+      clearTimeout(pollTimeout);
+    };
+  }, [retryTrigger]);
 
-  function chooseMode(nextMode) {
+  // Handle file preview cleanup
+  useEffect(() => {
+    if (!file || mode !== "image") {
+      setPreviewUrl(null);
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file, mode]);
+
+  function handleModeChange(nextMode) {
+    if (nextMode === mode) return;
     setMode(nextMode);
     setFile(null);
     setResult(null);
-    setError("");
+    setErrorMessage("");
+    if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
-  async function analyze(event) {
-    event.preventDefault();
+  function handleFileSelected(selectedFile) {
+    if (!selectedFile) return;
+    setFile(selectedFile);
+    setResult(null);
+    setErrorMessage("");
+  }
+
+  function handleDrop(e) {
+    e.preventDefault();
+    setIsDragOver(false);
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      handleFileSelected(e.dataTransfer.files[0]);
+    }
+  }
+
+  function clearFile() {
+    setFile(null);
+    setResult(null);
+    setErrorMessage("");
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  async function handleSubmit(e) {
+    e.preventDefault();
     if (!file) {
-      setError("Choose a file before starting the analysis.");
+      setErrorMessage("Please select or drop a media file to inspect.");
       return;
     }
-    setBusy(true);
-    setError("");
+
+    setIsAnalyzing(true);
+    setErrorMessage("");
     setResult(null);
-    const body = new FormData();
-    body.append("file", file);
+
+    const formData = new FormData();
+    formData.append("file", file);
+
     try {
-      const response = await fetch(`${API_URL}/api/analyze/${mode}`, { method: "POST", body });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.detail || "The analysis failed.");
-      setResult(payload);
-    } catch (requestError) {
-      setError(requestError.message || "Could not reach the Vehix API.");
+      const endpoint = API_URL ? `${API_URL}/api/analyze/${mode}` : `/api/analyze/${mode}`;
+      let response;
+      try {
+        response = await fetch(endpoint, {
+          method: "POST",
+          body: formData,
+        });
+      } catch (networkErr) {
+        if (!API_URL || API_URL.includes("localhost")) {
+          response = await fetch(`http://127.0.0.1:8000/api/analyze/${mode}`, {
+            method: "POST",
+            body: formData,
+          });
+        } else {
+          throw networkErr;
+        }
+      }
+
+      const data = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        const errorDetail = data?.detail || `Server responded with status ${response.status}`;
+        throw new Error(errorDetail);
+      }
+
+      setResult(data);
+    } catch (err) {
+      const isConnectionError = err.name === "TypeError" || err.message.includes("Failed to fetch");
+      if (isConnectionError) {
+        const target = API_URL || "http://127.0.0.1:8000";
+        const isRender = target.includes("onrender.com");
+        setErrorMessage(
+          isRender
+            ? `Unable to reach Render backend at ${target}. Free-tier instances take 45-60s to wake up.`
+            : `Unable to connect to local backend at ${target}. Please verify uvicorn is running.`
+        );
+        setBackendStatus("checking");
+      } else {
+        setErrorMessage(err.message || "An error occurred during analysis.");
+      }
     } finally {
-      setBusy(false);
+      setIsAnalyzing(false);
     }
   }
 
   return (
-    <main className="shell">
-      <nav><div className="brand"><span className="brand-mark" />Vehix</div><div className="nav-note">Vehicle intelligence / 01</div></nav>
-      <section className="hero">
-        <div><div className="eyebrow">Indian road vision system</div><h1>See the road<br /><em>in detail.</em></h1><p className="hero-copy">Turn traffic imagery into a readable vehicle report. Vehix detects vehicles first, then identifies their type with a dedicated classifier.</p></div>
-        <form className="upload-panel" onSubmit={analyze}>
-          <div className="panel-kicker">Start an analysis</div>
-          <div className="mode-switch"><button type="button" className={mode === "image" ? "mode-btn active" : "mode-btn"} onClick={() => chooseMode("image")}>Image</button><button type="button" className={mode === "video" ? "mode-btn active" : "mode-btn"} onClick={() => chooseMode("video")}>Video</button></div>
-          <label className="dropzone" htmlFor="file"><span className="upload-icon">↥</span><strong>{file ? file.name : `Choose a ${mode} to inspect`}</strong><span>{mode === "image" ? "PNG or JPEG · annotated result" : "MP4, AVI or MOV · processed frame by frame"}</span><input id="file" type="file" accept={accept} onChange={(event) => { setFile(event.target.files?.[0] || null); setResult(null); }} /></label>
-          {error && <p className="error">{error}</p>}
-          <button className="submit-btn" disabled={busy}>{busy ? "Analyzing..." : "Run detection →"}</button>
-        </form>
+    <div className="shell">
+      {/* Blurred Backdrop Loading Overlay while Backend Wakes Up on Render */}
+      {backendStatus !== "ready" && (
+        <div className="loading-backdrop">
+          <div className="loading-dialog">
+            <div className="loading-spinner-ring" />
+            <h2 className="loading-title">Connecting to Backend</h2>
+            <p className="loading-description">
+              The backend is deployed on Render. Free-tier services take around 45–60 seconds to wake up and load the ML models after being idle.
+            </p>
+            <div className="loading-status-badge">
+              <span className="loading-dot-pulse" />
+              <span>Waking instance on Render...</span>
+            </div>
+            {backendStatus === "error" && (
+              <button
+                type="button"
+                className="retry-connect-btn"
+                onClick={() => setRetryTrigger((prev) => prev + 1)}
+              >
+                Retry Connection
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Navigation */}
+      <header className="navbar">
+        <div className="brand-group">
+          <span className="brand-mark" />
+          <span className="brand-title">Vehix</span>
+          <span className="brand-tag">v1.0</span>
+        </div>
+      </header>
+
+      {/* Hero & Upload */}
+      <main className="hero-layout">
+        <div className="hero-info">
+          <div className="eyebrow">
+            <span className="eyebrow-accent" />
+            Computer Vision Pipeline
+          </div>
+          <h1 className="hero-heading">
+            Indian road vehicle detection &amp; classification
+          </h1>
+          <p className="hero-description">
+            A dual-stage vision architecture combining YOLOv8 for vehicle spatial localization with a dedicated classifier trained across 12 Indian vehicular categories.
+          </p>
+
+          <div className="taxonomy-preview">
+            {VEHICLE_CLASSES.map((cls) => (
+              <span key={cls} className="taxonomy-tag">
+                {cls}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        {/* Upload Panel */}
+        <div className="panel">
+          <div className="panel-header">
+            <span className="panel-title">Input Media</span>
+            <div className="segmented-control">
+              <button
+                type="button"
+                className={`segmented-btn ${mode === "image" ? "active" : ""}`}
+                onClick={() => handleModeChange("image")}
+              >
+                Image
+              </button>
+              <button
+                type="button"
+                className={`segmented-btn ${mode === "video" ? "active" : ""}`}
+                onClick={() => handleModeChange("video")}
+              >
+                Video
+              </button>
+            </div>
+          </div>
+
+          <form onSubmit={handleSubmit}>
+            <div
+              className={`dropzone ${isDragOver ? "drag-active" : ""}`}
+              onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
+              onDragLeave={() => setIsDragOver(false)}
+              onDrop={handleDrop}
+            >
+              <svg className="dropzone-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+              </svg>
+              <span className="dropzone-label">
+                {isDragOver ? "Drop file to upload" : "Select or drag file here"}
+              </span>
+              <span className="dropzone-hint">
+                {mode === "image" ? "JPEG, PNG or WEBP" : "MP4, MOV or AVI"}
+              </span>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept={acceptTypes}
+                onChange={(e) => handleFileSelected(e.target.files?.[0])}
+              />
+            </div>
+
+            {file && (
+              <div className="selected-file-card">
+                <div className="file-info">
+                  {previewUrl && (
+                    <img src={previewUrl} alt="Thumbnail preview" className="file-preview-thumb" />
+                  )}
+                  <div className="file-meta-col">
+                    <span className="file-name" title={file.name}>{file.name}</span>
+                    <span className="file-size">{formatBytes(file.size)}</span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={clearFile}
+                  className="remove-file-btn"
+                  title="Remove file"
+                  aria-label="Remove file"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                </button>
+              </div>
+            )}
+
+            {errorMessage && (
+              <div className="alert-error">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="12" y1="8" x2="12" y2="12" />
+                  <line x1="12" y1="16" x2="12.01" y2="16" />
+                </svg>
+                <span>{errorMessage}</span>
+              </div>
+            )}
+
+            <button
+              type="submit"
+              className="btn-submit"
+              disabled={isAnalyzing || !file}
+            >
+              {isAnalyzing && <span className="spinner" />}
+              <span>{isAnalyzing ? "Processing Frames..." : "Run Analysis"}</span>
+            </button>
+          </form>
+        </div>
+      </main>
+
+      {/* Results View */}
+      {result && <AnalysisReport result={result} />}
+
+      {/* Methodology Section */}
+      <section className="pipeline-section">
+        <div className="pipeline-header">
+          <h2 className="pipeline-title">Inference Architecture</h2>
+          <p className="pipeline-subtitle">Two-stage decoupled detection &amp; classification pipeline.</p>
+        </div>
+
+        <div className="pipeline-steps">
+          <div className="pipeline-step">
+            <div className="step-num">01 / INGESTION</div>
+            <div className="step-title">Frame Acquisition</div>
+            <p className="step-desc">Input streams are decoded into normalized OpenCV tensor frames.</p>
+          </div>
+          <div className="pipeline-step">
+            <div className="step-num">02 / LOCALIZATION</div>
+            <div className="step-title">YOLOv8 Detection</div>
+            <p className="step-desc">Extracts bounding boxes with confidence thresholds for candidate vehicles.</p>
+          </div>
+          <div className="pipeline-step">
+            <div className="step-num">03 / TAXONOMY</div>
+            <div className="step-title">Classification</div>
+            <p className="step-desc">Cropped regions pass through MobileNetV2 with Multi-Head Attention.</p>
+          </div>
+          <div className="pipeline-step">
+            <div className="step-num">04 / OUTPUT</div>
+            <div className="step-title">Annotated Report</div>
+            <p className="step-desc">Spatial boxes, class labels, and certainty metrics are compiled.</p>
+          </div>
+        </div>
       </section>
-      {result && <Result result={result} />}
-      <section className="methodology"><div className="section-heading"><div><div className="eyebrow">Methodology</div><h2>From pixels to insight.</h2></div><p>A two-stage pipeline keeps detection broad and classification specific.</p></div><div className="steps"><Step number="01 / INPUT" title="Capture" text="An image or video frame enters the analysis pipeline." /><Step number="02 / DETECT" title="Locate" text="YOLOv8 scans the scene and locates every vehicle." /><Step number="03 / CLASSIFY" title="Identify" text="Each crop is passed to the trained vehicle classifier." /><Step number="04 / REPORT" title="Understand" text="Confidence scores and annotated media become a report." /></div></section>
-    </main>
+
+      {/* Footer */}
+      <footer className="footer">
+        <span>Vehix — Indian Road Vehicle Detection &amp; Classification</span>
+        <span>Built with FastAPI &amp; YOLOv8</span>
+      </footer>
+    </div>
   );
 }
 
-function BackendLoading({ state, onRetry }) {
-  const failed = state === "error";
-  return <main className="loading-screen"><div className="loading-card"><span className="brand-mark" /><div className="eyebrow">Vehix / startup check</div><h1>{failed ? "The API needs another try." : "Waking the vehicle lab."}</h1><p>{failed ? "The backend did not respond within two minutes. Render may still be starting the service." : "The analysis engine is starting on Render. This usually takes up to a minute on the first visit."}</p>{failed ? <button className="submit-btn" onClick={onRetry}>Try again →</button> : <div className="loading-indicator" aria-label="Waiting for the Vehix backend"><span /><span /><span /></div>}</div></main>;
+function AnalysisReport({ result }) {
+  if (result.type === "video") {
+    return (
+      <section className="results-section">
+        <div className="results-header">
+          <h2 className="results-title">Processed Video Output</h2>
+          <span className="results-meta">Sequence Analysis</span>
+        </div>
+
+        <div className="metrics-row">
+          <div className="metric-card">
+            <div className="metric-label">Frames Processed</div>
+            <div className="metric-value">{result.processed_frames}</div>
+          </div>
+          <div className="metric-card">
+            <div className="metric-label">Total Frames</div>
+            <div className="metric-value">{result.total_frames}</div>
+          </div>
+          <div className="metric-card">
+            <div className="metric-label">Effective FPS</div>
+            <div className="metric-value">{result.fps}</div>
+          </div>
+          <div className="metric-card">
+            <div className="metric-label">Duration</div>
+            <div className="metric-value">{result.elapsed_time}s</div>
+          </div>
+        </div>
+
+        <div className="result-media-card">
+          <div className="media-toolbar">
+            <span>Annotated Video Stream</span>
+            <a href={result.result_url} target="_blank" rel="noreferrer" className="media-open-link">
+              Open Raw Video ↗
+            </a>
+          </div>
+          <video controls src={result.result_url} preload="metadata" />
+        </div>
+      </section>
+    );
+  }
+
+  const vehicles = result.vehicles || [];
+  const topVehicle = vehicles[0]?.label || "None";
+  const avgDetectionConf = vehicles.length
+    ? Math.round(vehicles.reduce((acc, v) => acc + v.detection_confidence, 0) / vehicles.length)
+    : 0;
+
+  return (
+    <section className="results-section">
+      <div className="results-header">
+        <h2 className="results-title">Analysis Output</h2>
+        <span className="results-meta">{vehicles.length} Vehicle{vehicles.length === 1 ? "" : "s"} Identified</span>
+      </div>
+
+      <div className="metrics-row">
+        <div className="metric-card">
+          <div className="metric-label">Detected Count</div>
+          <div className="metric-value">{vehicles.length}</div>
+        </div>
+        <div className="metric-card">
+          <div className="metric-label">Primary Class</div>
+          <div className="metric-value" style={{ fontSize: "18px" }}>{topVehicle}</div>
+        </div>
+        <div className="metric-card">
+          <div className="metric-label">Avg. Localization</div>
+          <div className="metric-value">{avgDetectionConf}%</div>
+        </div>
+      </div>
+
+      <div className="results-grid">
+        {/* Annotated Image */}
+        <div className="result-media-card">
+          <div className="media-toolbar">
+            <span>Annotated Canvas</span>
+            <a href={result.result_url} target="_blank" rel="noreferrer" className="media-open-link">
+              Open Raw Image ↗
+            </a>
+          </div>
+          <img src={result.result_url} alt="Annotated detection scene" />
+        </div>
+
+        {/* Vehicles Breakdown */}
+        <div className="vehicles-panel">
+          <div className="panel-subheading">Identified Crops ({vehicles.length})</div>
+          {vehicles.length === 0 ? (
+            <div className="vehicle-card">
+              <span className="vehicle-name" style={{ color: "var(--text-muted)" }}>
+                No vehicles detected in this image.
+              </span>
+            </div>
+          ) : (
+            vehicles.map((v) => (
+              <div className="vehicle-card" key={`${v.number}-${v.crop_url}`}>
+                <img src={v.crop_url} alt={v.label} className="vehicle-crop" />
+                <div className="vehicle-details">
+                  <div className="vehicle-title-row">
+                    <span className="vehicle-name">{v.label}</span>
+                    <span className="vehicle-index">#{v.number}</span>
+                  </div>
+
+                  <div className="confidence-group">
+                    <div className="confidence-row">
+                      <span className="confidence-name">YOLO Det.</span>
+                      <div className="confidence-bar-bg">
+                        <div
+                          className="confidence-bar-fill"
+                          style={{ width: `${v.detection_confidence}%` }}
+                        />
+                      </div>
+                      <span className="confidence-pct">{v.detection_confidence}%</span>
+                    </div>
+
+                    <div className="confidence-row">
+                      <span className="confidence-name">Classifier</span>
+                      <div className="confidence-bar-bg">
+                        <div
+                          className="confidence-bar-fill"
+                          style={{ width: `${v.classification_confidence}%` }}
+                        />
+                      </div>
+                      <span className="confidence-pct">{v.classification_confidence}%</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </section>
+  );
 }
 
-function Step({ number, title, text }) { return <article className="step"><div className="step-number">{number}</div><h3>{title}</h3><p>{text}</p></article>; }
-
-function Result({ result }) {
-  if (result.type === "video") return <section className="report"><div className="eyebrow">Analysis report / video</div><h2>Motion, made readable.</h2><video controls src={result.result_url} /><div className="stats"><Stat value={result.processed_frames} label="frames with detections" /><Stat value={result.fps} label="effective FPS" /><Stat value={`${result.elapsed_time}s`} label="processing time" /></div></section>;
-  return <section className="report"><div className="eyebrow">Analysis report / image</div><h2>What the camera found.</h2><div className="result-grid"><img src={result.result_url} alt="Annotated vehicle scene" /><div><div className="stat"><strong>{result.vehicles.length}</strong><span>vehicles found</span></div>{result.vehicles.map((vehicle) => <article className="vehicle" key={`${vehicle.number}-${vehicle.crop_url}`}><img src={vehicle.crop_url} alt={`Vehicle ${vehicle.number}`} /><div><strong>{vehicle.label}</strong><span>Detection {vehicle.detection_confidence}% · Classification {vehicle.classification_confidence}%</span></div></article>)}</div></div></section>;
-}
-
-function Stat({ value, label }) { return <div className="stat"><strong>{value}</strong><span>{label}</span></div>; }
-
-createRoot(document.getElementById("root")).render(<StrictMode><App /></StrictMode>);
+createRoot(document.getElementById("root")).render(
+  <StrictMode>
+    <App />
+  </StrictMode>
+);
