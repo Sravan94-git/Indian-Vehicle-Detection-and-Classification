@@ -27,32 +27,39 @@ function App() {
   const [previewUrl, setPreviewUrl] = useState(null);
   const [result, setResult] = useState(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [analysisStage, setAnalysisStage] = useState(0);
+  const [progress, setProgress] = useState(0);
   const [errorMessage, setErrorMessage] = useState("");
   const [isDragOver, setIsDragOver] = useState(false);
   const [retryTrigger, setRetryTrigger] = useState(0);
 
-  const ANALYSIS_STAGES = [
-    { label: "Uploading media", icon: "📤", duration: 3000 },
-    { label: "Running YOLOv8 detection", icon: "🔍", duration: 12000 },
-    { label: "Classifying vehicle types", icon: "🧠", duration: 10000 },
-    { label: "Rendering annotated output", icon: "🎨", duration: 5000 },
-  ];
-
-  // Cycle through analysis stages while analyzing
+  // Smooth numerical progress counter (0% to 100%) during analysis
   useEffect(() => {
     if (!isAnalyzing) {
-      setAnalysisStage(0);
+      setProgress(0);
       return;
     }
-    if (analysisStage >= ANALYSIS_STAGES.length - 1) return;
 
-    const timer = setTimeout(() => {
-      setAnalysisStage((s) => Math.min(s + 1, ANALYSIS_STAGES.length - 1));
-    }, ANALYSIS_STAGES[analysisStage].duration);
+    setProgress(2);
+    const interval = setInterval(() => {
+      setProgress((prev) => {
+        if (prev < 20) return Math.min(20, prev + 2.0);    // Uploading (0 - 20%)
+        if (prev < 55) return Math.min(55, prev + 0.9);    // YOLO detection (20 - 55%)
+        if (prev < 85) return Math.min(85, prev + 0.6);    // Classification (55 - 85%)
+        if (prev < 96) return Math.min(96, prev + 0.25);   // Rendering results (85 - 96%)
+        return prev;
+      });
+    }, 200);
 
-    return () => clearTimeout(timer);
-  }, [isAnalyzing, analysisStage]);
+    return () => clearInterval(interval);
+  }, [isAnalyzing]);
+
+  function getCurrentStageLabel(pct) {
+    if (pct < 20) return `Uploading ${mode}...`;
+    if (pct < 55) return "Running YOLOv8 vehicle detection...";
+    if (pct < 85) return "Classifying vehicle categories...";
+    if (pct < 100) return "Rendering annotated results...";
+    return "Analysis complete";
+  }
 
   const fileInputRef = useRef(null);
   const acceptTypes = mode === "image" ? "image/png,image/jpeg,image/webp" : "video/mp4,video/quicktime,video/x-msvideo";
@@ -192,6 +199,8 @@ function App() {
         throw new Error(errorDetail);
       }
 
+      setProgress(100);
+      await new Promise((r) => setTimeout(r, 300));
       setResult(data);
     } catch (err) {
       const isConnectionError = err.name === "TypeError" || err.message.includes("Failed to fetch");
@@ -357,38 +366,17 @@ function App() {
 
             {isAnalyzing ? (
               <div className="analysis-tracker">
-                <div className="tracker-header">
-                  <span className="tracker-spinner" />
-                  <span className="tracker-title">Analyzing {mode}...</span>
-                </div>
-                <div className="tracker-stages">
-                  {ANALYSIS_STAGES.map((stage, i) => (
-                    <div
-                      key={stage.label}
-                      className={`tracker-stage ${
-                        i < analysisStage ? "done" : i === analysisStage ? "active" : "pending"
-                      }`}
-                    >
-                      <div className="stage-indicator">
-                        {i < analysisStage ? (
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
-                            <polyline points="20 6 9 17 4 12" />
-                          </svg>
-                        ) : i === analysisStage ? (
-                          <span className="stage-pulse" />
-                        ) : (
-                          <span className="stage-dot" />
-                        )}
-                      </div>
-                      <span className="stage-icon">{stage.icon}</span>
-                      <span className="stage-label">{stage.label}</span>
-                    </div>
-                  ))}
+                <div className="tracker-top-row">
+                  <div className="tracker-stage-info">
+                    <span className="tracker-spinner" />
+                    <span className="current-stage-text">{getCurrentStageLabel(progress)}</span>
+                  </div>
+                  <span className="tracker-percentage">{Math.min(100, Math.round(progress))}%</span>
                 </div>
                 <div className="tracker-progress-bar">
                   <div
                     className="tracker-progress-fill"
-                    style={{ width: `${((analysisStage + 1) / ANALYSIS_STAGES.length) * 100}%` }}
+                    style={{ width: `${Math.min(100, progress)}%` }}
                   />
                 </div>
               </div>

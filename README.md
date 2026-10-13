@@ -238,7 +238,7 @@ Open the frontend URL shown by Vite, usually `http://localhost:5173`.
 ## 📸 Output
 
 * Upload an image containing one or more vehicles.
-* Watch the live progress tracker animate through pipeline stages: uploading → detecting → classifying → rendering.
+* Watch the real-time progress indicator track inference progress from 0% to 100% across the detection and classification pipeline.
 * Review the annotated image with bounding boxes and detected vehicle crops.
 * Upload a supported video and review the processed result.
 * Inspect vehicle labels and dual confidence scores (YOLO detection + classifier).
