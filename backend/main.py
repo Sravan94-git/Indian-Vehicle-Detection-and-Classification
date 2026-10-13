@@ -1,7 +1,6 @@
 import os
 
-# Run Keras natively on PyTorch - eliminates TensorFlow entirely
-os.environ["KERAS_BACKEND"] = "torch"
+# Limit internal memory pools, thread stacks, and disable GPU scanning
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
@@ -32,19 +31,15 @@ except Exception:
         gc.collect()
 
 import cv2
-import keras
 import numpy as np
 import torch
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from keras.activations import swish
-from keras.layers import InputLayer, MultiHeadAttention
-from keras.models import load_model
 from ultralytics import YOLO
 
-# Disable PyTorch autograd graph tracking and restrict to 1 thread
+# Restrict PyTorch to single-thread inference without gradient tracking
 torch.set_grad_enabled(False)
 torch.set_num_threads(1)
 
@@ -76,25 +71,6 @@ def cleanup_old_files():
             pass
 
 
-class CompatibleInputLayer(InputLayer):
-    def __init__(self, batch_shape=None, **kwargs):
-        if batch_shape is not None:
-            kwargs["batch_size"] = batch_shape[0]
-            kwargs["input_shape"] = batch_shape[1:]
-        super().__init__(**kwargs)
-
-
-class CompatibleMultiHeadAttention(MultiHeadAttention):
-    def __init__(self, seed=None, **kwargs):
-        super().__init__(**kwargs)
-
-
-keras.saving.get_custom_objects().update({
-    "swish": swish,
-    "InputLayer": CompatibleInputLayer,
-    "MultiHeadAttention": CompatibleMultiHeadAttention,
-})
-
 yolo_model = None
 classifier = None
 model_lock = threading.Lock()
@@ -113,15 +89,11 @@ def load_models():
                     yolo_model = YOLO(str(BACKEND_DIR / "weights" / "yolov8n.pt"))
                     trim_memory()
                 if classifier is None:
-                    classifier = load_model(
-                        BACKEND_DIR / "weights" / "classifier.h5",
-                        compile=False,
-                        custom_objects={
-                            "swish": swish,
-                            "InputLayer": CompatibleInputLayer,
-                            "MultiHeadAttention": CompatibleMultiHeadAttention,
-                        },
+                    classifier = torch.jit.load(
+                        str(BACKEND_DIR / "weights" / "classifier.pt"),
+                        map_location="cpu",
                     )
+                    classifier.eval()
                     trim_memory()
                 model_status = "ready"
             except Exception as error:
@@ -137,7 +109,7 @@ app = FastAPI(title="Vehix API", version="1.0.0")
 @app.on_event("startup")
 async def warm_models():
     async def warm_in_background():
-        await asyncio.sleep(2)
+        await asyncio.sleep(1)
         try:
             await asyncio.to_thread(load_models)
         except Exception as e:
@@ -225,10 +197,11 @@ def detect_image(image, request):
             "position": {"x1": x1, "y1": y1, "x2": x2, "y2": y2},
         })
 
-    # 3. Classify all detected crops in a single forward pass
+    # 3. Classify all detected crops in a single fast forward pass
     if crops_to_classify:
-        batch = np.array(crops_to_classify, dtype=np.float32)
-        predictions = classifier_model.predict(batch, batch_size=len(batch), verbose=0)
+        batch = torch.from_numpy(np.array(crops_to_classify, dtype=np.float32))
+        with torch.inference_mode():
+            predictions = classifier_model(batch).numpy()
         del batch
         del crops_to_classify
 
@@ -397,8 +370,11 @@ async def analyze_video(request: Request, file: UploadFile = File(...)):
                 crop = frame[max(0, y1):max(0, y2), max(0, x1):max(0, x2)]
                 if crop.size == 0 or (x2 - x1 < 12) or (y2 - y1 < 12):
                     continue
-                crop_in = np.expand_dims(cv2.resize(crop, (128, 128)).astype("float32") / 255.0, axis=0)
-                pred = classifier_model.predict(crop_in, verbose=0)[0]
+                crop_in = torch.from_numpy(
+                    np.expand_dims(cv2.resize(crop, (128, 128)).astype("float32") / 255.0, axis=0)
+                )
+                with torch.inference_mode():
+                    pred = classifier_model(crop_in).numpy()[0]
                 label = CLASS_NAMES[int(np.argmax(pred))]
                 cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
                 cv2.putText(annotated, label, (x1, max(20, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (36, 255, 12), 2)
