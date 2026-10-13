@@ -504,6 +504,137 @@ body::before {
   to { transform: rotate(360deg); }
 }
 
+/* Analysis Live Tracker */
+.analysis-tracker {
+  margin-top: 18px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  animation: fadeIn 0.25s ease;
+}
+
+.tracker-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.tracker-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  border-top-color: #38bdf8;
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
+}
+
+.tracker-title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-primary);
+}
+
+.tracker-stages {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tracker-stage {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  transition: all 0.2s ease;
+}
+
+.tracker-stage.done {
+  color: var(--text-secondary);
+  background: rgba(16, 185, 129, 0.08);
+}
+
+.tracker-stage.done .stage-indicator {
+  color: var(--status-ready);
+}
+
+.tracker-stage.active {
+  color: var(--text-primary);
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  font-weight: 500;
+}
+
+.tracker-stage.pending {
+  color: var(--text-muted);
+  opacity: 0.55;
+}
+
+.stage-indicator {
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.stage-pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #38bdf8;
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.75);
+  animation: pulseGlow 1.2s ease-in-out infinite alternate;
+}
+
+.stage-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.stage-icon {
+  font-size: 13px;
+  line-height: 1;
+}
+
+.stage-label {
+  flex: 1;
+}
+
+.tracker-progress-bar {
+  height: 4px;
+  width: 100%;
+  background: var(--border-subtle);
+  border-radius: 999px;
+  overflow: hidden;
+  margin-top: 2px;
+}
+
+.tracker-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #38bdf8, #10b981);
+  transition: width 0.4s ease;
+  border-radius: 999px;
+}
+
+@keyframes pulseGlow {
+  from { opacity: 0.5; transform: scale(0.85); }
+  to { opacity: 1; transform: scale(1.15); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 /* Alerts */
 .alert-error {
   margin-top: 14px;

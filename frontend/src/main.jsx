@@ -27,9 +27,32 @@ function App() {
   const [previewUrl, setPreviewUrl] = useState(null);
   const [result, setResult] = useState(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisStage, setAnalysisStage] = useState(0);
   const [errorMessage, setErrorMessage] = useState("");
   const [isDragOver, setIsDragOver] = useState(false);
   const [retryTrigger, setRetryTrigger] = useState(0);
+
+  const ANALYSIS_STAGES = [
+    { label: "Uploading media", icon: "📤", duration: 3000 },
+    { label: "Running YOLOv8 detection", icon: "🔍", duration: 12000 },
+    { label: "Classifying vehicle types", icon: "🧠", duration: 10000 },
+    { label: "Rendering annotated output", icon: "🎨", duration: 5000 },
+  ];
+
+  // Cycle through analysis stages while analyzing
+  useEffect(() => {
+    if (!isAnalyzing) {
+      setAnalysisStage(0);
+      return;
+    }
+    if (analysisStage >= ANALYSIS_STAGES.length - 1) return;
+
+    const timer = setTimeout(() => {
+      setAnalysisStage((s) => Math.min(s + 1, ANALYSIS_STAGES.length - 1));
+    }, ANALYSIS_STAGES[analysisStage].duration);
+
+    return () => clearTimeout(timer);
+  }, [isAnalyzing, analysisStage]);
 
   const fileInputRef = useRef(null);
   const acceptTypes = mode === "image" ? "image/png,image/jpeg,image/webp" : "video/mp4,video/quicktime,video/x-msvideo";
@@ -332,14 +355,52 @@ function App() {
               </div>
             )}
 
-            <button
-              type="submit"
-              className="btn-submit"
-              disabled={isAnalyzing || !file}
-            >
-              {isAnalyzing && <span className="spinner" />}
-              <span>{isAnalyzing ? "Processing Frames..." : "Run Analysis"}</span>
-            </button>
+            {isAnalyzing ? (
+              <div className="analysis-tracker">
+                <div className="tracker-header">
+                  <span className="tracker-spinner" />
+                  <span className="tracker-title">Analyzing {mode}...</span>
+                </div>
+                <div className="tracker-stages">
+                  {ANALYSIS_STAGES.map((stage, i) => (
+                    <div
+                      key={stage.label}
+                      className={`tracker-stage ${
+                        i < analysisStage ? "done" : i === analysisStage ? "active" : "pending"
+                      }`}
+                    >
+                      <div className="stage-indicator">
+                        {i < analysisStage ? (
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                            <polyline points="20 6 9 17 4 12" />
+                          </svg>
+                        ) : i === analysisStage ? (
+                          <span className="stage-pulse" />
+                        ) : (
+                          <span className="stage-dot" />
+                        )}
+                      </div>
+                      <span className="stage-icon">{stage.icon}</span>
+                      <span className="stage-label">{stage.label}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="tracker-progress-bar">
+                  <div
+                    className="tracker-progress-fill"
+                    style={{ width: `${((analysisStage + 1) / ANALYSIS_STAGES.length) * 100}%` }}
+                  />
+                </div>
+              </div>
+            ) : (
+              <button
+                type="submit"
+                className="btn-submit"
+                disabled={!file}
+              >
+                <span>Run Analysis</span>
+              </button>
+            )}
           </form>
         </div>
       </main>
@@ -351,29 +412,34 @@ function App() {
       <section className="pipeline-section">
         <div className="pipeline-header">
           <h2 className="pipeline-title">Inference Architecture</h2>
-          <p className="pipeline-subtitle">Two-stage decoupled detection &amp; classification pipeline.</p>
+          <p className="pipeline-subtitle">Pure PyTorch pipeline — TensorFlow-free, TorchScript-optimized, JIT-warmed at startup.</p>
         </div>
 
         <div className="pipeline-steps">
           <div className="pipeline-step">
             <div className="step-num">01 / INGESTION</div>
             <div className="step-title">Frame Acquisition</div>
-            <p className="step-desc">Input streams are decoded into normalized OpenCV tensor frames.</p>
+            <p className="step-desc">Input is decoded via OpenCV and downscaled to max 480px for efficient processing.</p>
           </div>
           <div className="pipeline-step">
             <div className="step-num">02 / LOCALIZATION</div>
-            <div className="step-title">YOLOv8 Detection</div>
-            <p className="step-desc">Extracts bounding boxes with confidence thresholds for candidate vehicles.</p>
+            <div className="step-title">YOLOv8n Detection</div>
+            <p className="step-desc">Runs at 320px resolution under torch.inference_mode — detects vehicles with COCO class filtering.</p>
           </div>
           <div className="pipeline-step">
             <div className="step-num">03 / TAXONOMY</div>
-            <div className="step-title">Classification</div>
-            <p className="step-desc">Cropped regions pass through MobileNetV2 with Multi-Head Attention.</p>
+            <div className="step-title">TorchScript Classifier</div>
+            <p className="step-desc">Batched crops pass through a TorchScript-compiled MobileNetV2 + Multi-Head Attention model.</p>
           </div>
           <div className="pipeline-step">
-            <div className="step-num">04 / OUTPUT</div>
+            <div className="step-num">04 / MEMORY</div>
+            <div className="step-title">Optimized Cleanup</div>
+            <p className="step-desc">gc.collect + malloc_trim reclaims memory after every request to stay under 512 MB RAM.</p>
+          </div>
+          <div className="pipeline-step">
+            <div className="step-num">05 / OUTPUT</div>
             <div className="step-title">Annotated Report</div>
-            <p className="step-desc">Spatial boxes, class labels, and certainty metrics are compiled.</p>
+            <p className="step-desc">Bounding boxes, class labels, and dual confidence scores are rendered and served.</p>
           </div>
         </div>
       </section>
@@ -381,7 +447,7 @@ function App() {
       {/* Footer */}
       <footer className="footer">
         <span>Vehix — Indian Road Vehicle Detection &amp; Classification</span>
-        <span>Built with FastAPI &amp; YOLOv8</span>
+        <span>Built with FastAPI, PyTorch &amp; YOLOv8</span>
       </footer>
     </div>
   );
