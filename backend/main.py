@@ -1,17 +1,13 @@
 import os
 
-# Limit internal memory pools, thread stacks, and disable GPU scanning
+# Run Keras natively on PyTorch - eliminates TensorFlow entirely
+os.environ["KERAS_BACKEND"] = "torch"
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
-os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
-os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
-os.environ["TF_NUM_INTRAOP_THREADS"] = "1"
-os.environ["TF_NUM_INTEROP_THREADS"] = "1"
 os.environ["MALLOC_TRIM_THRESHOLD_"] = "100000"
 
 import asyncio
