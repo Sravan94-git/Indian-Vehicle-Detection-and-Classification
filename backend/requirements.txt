@@ -1,12 +1,13 @@
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 python-multipart==0.0.20
-tensorflow==2.16.2
+tensorflow-cpu==2.16.2
 tf-keras==2.16.0
 keras==3.1.1
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.5.1+cpu
+torchvision==0.20.1+cpu
 ultralytics==8.3.0
-torch==2.5.1
-torchvision==0.20.1
 opencv-python-headless==4.10.0.84
 numpy==1.26.4
 Pillow==10.4.0

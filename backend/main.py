@@ -1,5 +1,20 @@
-import asyncio
 import os
+
+# Limit internal memory pools, thread stacks, and disable GPU scanning
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+os.environ["TF_NUM_INTRAOP_THREADS"] = "1"
+os.environ["TF_NUM_INTEROP_THREADS"] = "1"
+os.environ["MALLOC_TRIM_THRESHOLD_"] = "100000"
+
+import asyncio
+import gc
 import threading
 import time
 import uuid
@@ -8,14 +23,19 @@ from pathlib import Path
 import cv2
 import keras
 import numpy as np
+import torch
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from keras.activations import swish
 from keras.layers import InputLayer, MultiHeadAttention
 from keras.models import load_model
 from ultralytics import YOLO
+
+# Disable gradient graphs and restrict PyTorch execution to 1 thread
+torch.set_grad_enabled(False)
+torch.set_num_threads(1)
 
 BACKEND_DIR = Path(__file__).resolve().parent
 RESULT_DIR = BACKEND_DIR / "generated" / "results"
@@ -30,7 +50,6 @@ CLASS_NAMES = [
 ]
 
 # COCO vehicle classes: bicycle (1), car (2), motorcycle (3), bus (5), truck (7).
-# Explicitly excludes humans (COCO class 0: person) and other non-vehicle entities.
 COCO_VEHICLE_CLASSES = [1, 2, 3, 5, 7]
 
 
@@ -67,16 +86,20 @@ def load_models():
     with model_lock:
         if yolo_model is None or classifier is None:
             try:
-                yolo_model = YOLO(str(BACKEND_DIR / "weights" / "yolov8n.pt"))
-                classifier = load_model(
-                    BACKEND_DIR / "weights" / "classifier.h5",
-                    compile=False,
-                    custom_objects={
-                        "swish": swish,
-                        "InputLayer": CompatibleInputLayer,
-                        "MultiHeadAttention": CompatibleMultiHeadAttention,
-                    },
-                )
+                if yolo_model is None:
+                    yolo_model = YOLO(str(BACKEND_DIR / "weights" / "yolov8n.pt"))
+                    gc.collect()
+                if classifier is None:
+                    classifier = load_model(
+                        BACKEND_DIR / "weights" / "classifier.h5",
+                        compile=False,
+                        custom_objects={
+                            "swish": swish,
+                            "InputLayer": CompatibleInputLayer,
+                            "MultiHeadAttention": CompatibleMultiHeadAttention,
+                        },
+                    )
+                    gc.collect()
                 model_status = "ready"
             except Exception as error:
                 model_status = "error"
@@ -84,16 +107,19 @@ def load_models():
                 raise
     return yolo_model, classifier
 
+
 app = FastAPI(title="Vehix API", version="1.0.0")
 
 
 @app.on_event("startup")
 async def warm_models():
     async def warm_in_background():
+        # Delay warming by 2 seconds so FastAPI starts and responds to health checks immediately
+        await asyncio.sleep(2)
         try:
             await asyncio.to_thread(load_models)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Error warming models: {e}")
 
     asyncio.create_task(warm_in_background())
 
@@ -131,12 +157,14 @@ def classify_crop(crop):
 def detect_image(image, request):
     yolo_model_instance, _ = load_models()
     # Explicitly filter YOLO to only detect vehicle categories (excluding humans/pedestrians)
-    detections = yolo_model_instance(
-        image,
-        classes=COCO_VEHICLE_CLASSES,
-        conf=0.25,
-        verbose=False,
-    )[0]
+    with torch.inference_mode():
+        detections = yolo_model_instance(
+            image,
+            classes=COCO_VEHICLE_CLASSES,
+            conf=0.25,
+            verbose=False,
+        )[0]
+
     vehicles = []
     annotated = image.copy()
     height, width = image.shape[:2]
@@ -185,6 +213,8 @@ def detect_image(image, request):
     vehicles.sort(key=lambda item: item["detection_confidence"], reverse=True)
     for idx, v in enumerate(vehicles):
         v["number"] = idx + 1
+
+    gc.collect()
     return annotated, vehicles
 
 
@@ -276,12 +306,13 @@ async def analyze_video(request: Request, file: UploadFile = File(...)):
             if not success:
                 break
             total_frames += 1
-            detections = yolo_model_instance(
-                frame,
-                classes=COCO_VEHICLE_CLASSES,
-                conf=0.25,
-                verbose=False,
-            )[0]
+            with torch.inference_mode():
+                detections = yolo_model_instance(
+                    frame,
+                    classes=COCO_VEHICLE_CLASSES,
+                    conf=0.25,
+                    verbose=False,
+                )[0]
             annotated = frame.copy()
             detected = False
             for box in detections.boxes:
@@ -299,10 +330,14 @@ async def analyze_video(request: Request, file: UploadFile = File(...)):
             if detected:
                 processed_frames += 1
             writer.write(annotated)
+
+            if total_frames % 50 == 0:
+                gc.collect()
     finally:
         capture.release()
         writer.release()
         source_path.unlink(missing_ok=True)
+        gc.collect()
 
     elapsed_time = time.time() - started
     return {

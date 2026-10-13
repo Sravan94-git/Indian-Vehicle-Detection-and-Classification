@@ -61,6 +61,12 @@ function App() {
           if (data.status === "ok") {
             if (!isCancelled) setBackendStatus("ready");
             return;
+          } else if (data.status === "error") {
+            if (!isCancelled) {
+              setBackendStatus("error");
+              setErrorMessage(data.detail || "Model initialization failed on backend.");
+            }
+            return;
           }
         }
       } catch {
