@@ -2,11 +2,12 @@ import os
 
 # Limit internal memory pools, thread stacks, and disable GPU scanning
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
-os.environ["NUMEXPR_NUM_THREADS"] = "1"
+os.environ["OMP_NUM_THREADS"] = "2"
+os.environ["OPENBLAS_NUM_THREADS"] = "2"
+os.environ["MKL_NUM_THREADS"] = "2"
+os.environ["YOLO_VERBOSE"] = "False"
+os.environ["YOLO_OFFLINE"] = "1"
+os.environ["ULTRALYTICS_AUTOINSTALL"] = "False"
 os.environ["MALLOC_TRIM_THRESHOLD_"] = "100000"
 
 import asyncio
@@ -39,9 +40,9 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from ultralytics import YOLO
 
-# Restrict PyTorch to single-thread inference without gradient tracking
+# Restrict PyTorch execution to 2 threads without gradient tracking
 torch.set_grad_enabled(False)
-torch.set_num_threads(1)
+torch.set_num_threads(2)
 
 BACKEND_DIR = Path(__file__).resolve().parent
 RESULT_DIR = BACKEND_DIR / "generated" / "results"
@@ -140,6 +141,7 @@ def media_url(request: Request, folder: str, filename: str) -> str:
 
 
 def detect_image(image, request):
+    t_start = time.time()
     yolo_model_instance, classifier_model = load_models()
     height, width = image.shape[:2]
 
@@ -153,6 +155,7 @@ def detect_image(image, request):
             verbose=False,
         )[0]
 
+    t_yolo = time.time()
     annotated = image.copy()
 
     # 2. Extract valid vehicle bounding boxes, capped at top 10 to protect memory
@@ -171,7 +174,6 @@ def detect_image(image, request):
             continue
         valid_boxes.append((detection_confidence, x1, y1, x2, y2))
 
-    # Sort candidates by localization confidence and limit to top 10
     valid_boxes.sort(key=lambda item: item[0], reverse=True)
     valid_boxes = valid_boxes[:10]
 
@@ -232,6 +234,9 @@ def detect_image(image, request):
                 2,
             )
 
+    t_done = time.time()
+    print(f"[DETECT_TIMING] YOLO: {t_yolo - t_start:.2f}s | Classifier: {t_done - t_yolo:.2f}s | Total: {t_done - t_start:.2f}s")
+
     del detections
     trim_memory()
     return annotated, vehicles
@@ -281,7 +286,10 @@ async def not_found_handler(request: Request, exc: HTTPException):
 @app.post("/api/analyze/image")
 @app.post("/analyze/image")
 async def analyze_image(request: Request, file: UploadFile = File(...)):
-    cleanup_old_files()
+    t0 = time.time()
+    # Trigger cleanup in background without blocking current request
+    asyncio.create_task(asyncio.to_thread(cleanup_old_files))
+
     valid_image_types = {"image/jpeg", "image/png", "image/webp", "image/jpg"}
     if file.content_type and file.content_type not in valid_image_types and not file.content_type.startswith("image/"):
         raise HTTPException(status_code=415, detail="Upload a JPEG, PNG, or WEBP image")
@@ -291,19 +299,22 @@ async def analyze_image(request: Request, file: UploadFile = File(...)):
     if image is None:
         raise HTTPException(status_code=400, detail="The uploaded image could not be read or decoded")
 
-    # Downscale high-resolution images to max dimension 960 to conserve RAM
+    # Downscale high-resolution images to max dimension 640 to run 4x faster on CPU
     h, w = image.shape[:2]
     max_dim = max(h, w)
-    if max_dim > 960:
-        scale = 960.0 / max_dim
+    if max_dim > 640:
+        scale = 640.0 / max_dim
         image = cv2.resize(image, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
 
-    annotated, vehicles = detect_image(image, request)
+    # Offload CPU inference to worker thread so event loop never stalls
+    annotated, vehicles = await asyncio.to_thread(detect_image, image, request)
+
     result_filename = f"{uuid.uuid4().hex}.jpg"
     cv2.imwrite(str(RESULT_DIR / result_filename), annotated)
     del annotated
     trim_memory()
 
+    print(f"[API_ANALYZE_IMAGE] Total request time: {time.time() - t0:.2f}s")
     return {
         "type": "image",
         "result_url": media_url(request, "results", result_filename),
@@ -314,7 +325,7 @@ async def analyze_image(request: Request, file: UploadFile = File(...)):
 @app.post("/api/analyze/video")
 @app.post("/analyze/video")
 async def analyze_video(request: Request, file: UploadFile = File(...)):
-    cleanup_old_files()
+    asyncio.create_task(asyncio.to_thread(cleanup_old_files))
     if file.content_type not in {"video/mp4", "video/quicktime", "video/x-msvideo"}:
         raise HTTPException(status_code=415, detail="Upload an MP4, MOV, or AVI video")
     source_filename = f"{uuid.uuid4().hex}.mp4"
@@ -325,11 +336,11 @@ async def analyze_video(request: Request, file: UploadFile = File(...)):
     orig_h = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     frame_rate = capture.get(cv2.CAP_PROP_FPS) or 24
 
-    # Cap video resolution to max 720 to prevent memory exhaustion
+    # Cap video resolution to max 640 to prevent CPU stall
     scale = 1.0
     max_dim = max(orig_w, orig_h)
-    if max_dim > 720:
-        scale = 720.0 / max_dim
+    if max_dim > 640:
+        scale = 640.0 / max_dim
     out_w = int(orig_w * scale)
     out_h = int(orig_h * scale)
 
