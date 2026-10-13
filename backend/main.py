@@ -4,6 +4,7 @@ import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
@@ -20,6 +21,20 @@ import time
 import uuid
 from pathlib import Path
 
+# Setup C-level memory trimming for Linux containers (Render free tier)
+try:
+    import ctypes
+    libc = ctypes.CDLL("libc.so.6")
+    def trim_memory():
+        gc.collect()
+        try:
+            libc.malloc_trim(0)
+        except Exception:
+            pass
+except Exception:
+    def trim_memory():
+        gc.collect()
+
 import cv2
 import keras
 import numpy as np
@@ -33,7 +48,7 @@ from keras.layers import InputLayer, MultiHeadAttention
 from keras.models import load_model
 from ultralytics import YOLO
 
-# Disable gradient graphs and restrict PyTorch execution to 1 thread
+# Disable PyTorch autograd graph tracking and restrict to 1 thread
 torch.set_grad_enabled(False)
 torch.set_num_threads(1)
 
@@ -51,6 +66,18 @@ CLASS_NAMES = [
 
 # COCO vehicle classes: bicycle (1), car (2), motorcycle (3), bus (5), truck (7).
 COCO_VEHICLE_CLASSES = [1, 2, 3, 5, 7]
+
+
+def cleanup_old_files():
+    """Remove generated images older than 20 minutes to prevent storage buildup."""
+    now = time.time()
+    for folder in (RESULT_DIR, CROP_DIR, UPLOAD_DIR):
+        try:
+            for item in folder.glob("*"):
+                if item.is_file() and now - item.stat().st_mtime > 1200:
+                    item.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 class CompatibleInputLayer(InputLayer):
@@ -88,7 +115,7 @@ def load_models():
             try:
                 if yolo_model is None:
                     yolo_model = YOLO(str(BACKEND_DIR / "weights" / "yolov8n.pt"))
-                    gc.collect()
+                    trim_memory()
                 if classifier is None:
                     classifier = load_model(
                         BACKEND_DIR / "weights" / "classifier.h5",
@@ -99,7 +126,7 @@ def load_models():
                             "MultiHeadAttention": CompatibleMultiHeadAttention,
                         },
                     )
-                    gc.collect()
+                    trim_memory()
                 model_status = "ready"
             except Exception as error:
                 model_status = "error"
@@ -114,7 +141,6 @@ app = FastAPI(title="Vehix API", version="1.0.0")
 @app.on_event("startup")
 async def warm_models():
     async def warm_in_background():
-        # Delay warming by 2 seconds so FastAPI starts and responds to health checks immediately
         await asyncio.sleep(2)
         try:
             await asyncio.to_thread(load_models)
@@ -145,76 +171,100 @@ def media_url(request: Request, folder: str, filename: str) -> str:
     return f"{base}/media/{folder}/{filename}"
 
 
-def classify_crop(crop):
-    _, classifier_model = load_models()
-    resized = cv2.resize(crop, (128, 128))
-    normalized = resized.astype("float32") / 255.0
-    prediction = classifier_model.predict(np.expand_dims(normalized, axis=0), verbose=0)[0]
-    class_id = int(np.argmax(prediction))
-    return CLASS_NAMES[class_id], round(float(np.max(prediction)) * 100, 1)
-
-
 def detect_image(image, request):
-    yolo_model_instance, _ = load_models()
-    # Explicitly filter YOLO to only detect vehicle categories (excluding humans/pedestrians)
+    yolo_model_instance, classifier_model = load_models()
+    height, width = image.shape[:2]
+
+    # 1. Run YOLO detection with strict 640 input resolution and inference mode
     with torch.inference_mode():
         detections = yolo_model_instance(
             image,
             classes=COCO_VEHICLE_CLASSES,
             conf=0.25,
+            imgsz=640,
             verbose=False,
         )[0]
 
-    vehicles = []
     annotated = image.copy()
-    height, width = image.shape[:2]
 
-    detected_count = 0
+    # 2. Extract valid vehicle bounding boxes, capped at top 10 to protect memory
+    valid_boxes = []
     for box in detections.boxes:
         cls_id = int(box.cls[0].item())
         if cls_id not in COCO_VEHICLE_CLASSES:
             continue
-
         detection_confidence = round(float(box.conf[0].item()) * 100, 1)
         if detection_confidence < 25.0:
             continue
-
         x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
         x1, y1 = max(0, x1), max(0, y1)
         x2, y2 = min(width, x2), min(height, y2)
+        if (x2 - x1 < 12) or (y2 - y1 < 12):
+            continue
+        valid_boxes.append((detection_confidence, x1, y1, x2, y2))
+
+    # Sort candidates by localization confidence and limit to top 10
+    valid_boxes.sort(key=lambda item: item[0], reverse=True)
+    valid_boxes = valid_boxes[:10]
+
+    vehicles = []
+    crops_to_classify = []
+    crops_meta = []
+
+    for idx, (detection_confidence, x1, y1, x2, y2) in enumerate(valid_boxes):
         crop = image[y1:y2, x1:x2]
-        if crop.size == 0 or (x2 - x1 < 12) or (y2 - y1 < 12):
+        if crop.size == 0:
             continue
 
-        label, classification_confidence = classify_crop(crop)
-        detected_count += 1
+        crop_resized = cv2.resize(crop, (128, 128))
+        crops_to_classify.append(crop_resized.astype("float32") / 255.0)
+
         crop_filename = f"{uuid.uuid4().hex}.jpg"
         cv2.imwrite(str(CROP_DIR / crop_filename), crop)
-        vehicle = {
-            "number": detected_count,
-            "label": label,
-            "classification_confidence": classification_confidence,
+
+        crops_meta.append({
+            "number": idx + 1,
             "detection_confidence": detection_confidence,
             "crop_url": media_url(request, "crops", crop_filename),
             "position": {"x1": x1, "y1": y1, "x2": x2, "y2": y2},
-        }
-        vehicles.append(vehicle)
-        cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        cv2.putText(
-            annotated,
-            f"{detected_count}. {label} {detection_confidence}%",
-            (x1, max(20, y1 - 10)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (0, 255, 0),
-            2,
-        )
+        })
 
-    vehicles.sort(key=lambda item: item["detection_confidence"], reverse=True)
-    for idx, v in enumerate(vehicles):
-        v["number"] = idx + 1
+    # 3. Classify all detected crops in a single forward pass
+    if crops_to_classify:
+        batch = np.array(crops_to_classify, dtype=np.float32)
+        predictions = classifier_model.predict(batch, batch_size=len(batch), verbose=0)
+        del batch
+        del crops_to_classify
 
-    gc.collect()
+        for meta, pred in zip(crops_meta, predictions):
+            class_id = int(np.argmax(pred))
+            label = CLASS_NAMES[class_id]
+            classification_confidence = round(float(np.max(pred)) * 100, 1)
+            x1, y1 = meta["position"]["x1"], meta["position"]["y1"]
+            x2, y2 = meta["position"]["x2"], meta["position"]["y2"]
+
+            vehicles.append({
+                "number": meta["number"],
+                "label": label,
+                "classification_confidence": classification_confidence,
+                "detection_confidence": meta["detection_confidence"],
+                "crop_url": meta["crop_url"],
+                "position": meta["position"],
+            })
+
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(
+                annotated,
+                f"{meta['number']}. {label} {meta['detection_confidence']}%",
+                (x1, max(20, y1 - 10)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 255, 0),
+                2,
+            )
+
+    del detections
+    trim_memory()
     return annotated, vehicles
 
 
@@ -262,17 +312,29 @@ async def not_found_handler(request: Request, exc: HTTPException):
 @app.post("/api/analyze/image")
 @app.post("/analyze/image")
 async def analyze_image(request: Request, file: UploadFile = File(...)):
+    cleanup_old_files()
     valid_image_types = {"image/jpeg", "image/png", "image/webp", "image/jpg"}
     if file.content_type and file.content_type not in valid_image_types and not file.content_type.startswith("image/"):
         raise HTTPException(status_code=415, detail="Upload a JPEG, PNG, or WEBP image")
     contents = await file.read()
     image = cv2.imdecode(np.frombuffer(contents, np.uint8), cv2.IMREAD_COLOR)
+    del contents
     if image is None:
         raise HTTPException(status_code=400, detail="The uploaded image could not be read or decoded")
+
+    # Downscale high-resolution images to max dimension 960 to conserve RAM
+    h, w = image.shape[:2]
+    max_dim = max(h, w)
+    if max_dim > 960:
+        scale = 960.0 / max_dim
+        image = cv2.resize(image, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
 
     annotated, vehicles = detect_image(image, request)
     result_filename = f"{uuid.uuid4().hex}.jpg"
     cv2.imwrite(str(RESULT_DIR / result_filename), annotated)
+    del annotated
+    trim_memory()
+
     return {
         "type": "image",
         "result_url": media_url(request, "results", result_filename),
@@ -283,22 +345,32 @@ async def analyze_image(request: Request, file: UploadFile = File(...)):
 @app.post("/api/analyze/video")
 @app.post("/analyze/video")
 async def analyze_video(request: Request, file: UploadFile = File(...)):
+    cleanup_old_files()
     if file.content_type not in {"video/mp4", "video/quicktime", "video/x-msvideo"}:
         raise HTTPException(status_code=415, detail="Upload an MP4, MOV, or AVI video")
     source_filename = f"{uuid.uuid4().hex}.mp4"
     source_path = UPLOAD_DIR / source_filename
     source_path.write_bytes(await file.read())
     capture = cv2.VideoCapture(str(source_path))
-    width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    orig_w = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+    orig_h = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     frame_rate = capture.get(cv2.CAP_PROP_FPS) or 24
+
+    # Cap video resolution to max 720 to prevent memory exhaustion
+    scale = 1.0
+    max_dim = max(orig_w, orig_h)
+    if max_dim > 720:
+        scale = 720.0 / max_dim
+    out_w = int(orig_w * scale)
+    out_h = int(orig_h * scale)
+
     result_filename = f"{uuid.uuid4().hex}.mp4"
     result_path = RESULT_DIR / result_filename
-    writer = cv2.VideoWriter(str(result_path), cv2.VideoWriter_fourcc(*"mp4v"), frame_rate, (width, height))
+    writer = cv2.VideoWriter(str(result_path), cv2.VideoWriter_fourcc(*"mp4v"), frame_rate, (out_w, out_h))
     processed_frames = 0
     total_frames = 0
     started = time.time()
-    yolo_model_instance, _ = load_models()
+    yolo_model_instance, classifier_model = load_models()
 
     try:
         while capture.isOpened():
@@ -306,16 +378,22 @@ async def analyze_video(request: Request, file: UploadFile = File(...)):
             if not success:
                 break
             total_frames += 1
+
+            if scale != 1.0:
+                frame = cv2.resize(frame, (out_w, out_h), interpolation=cv2.INTER_AREA)
+
             with torch.inference_mode():
                 detections = yolo_model_instance(
                     frame,
                     classes=COCO_VEHICLE_CLASSES,
                     conf=0.25,
+                    imgsz=640,
                     verbose=False,
                 )[0]
+
             annotated = frame.copy()
             detected = False
-            for box in detections.boxes:
+            for box in detections.boxes[:5]:  # limit to top 5 vehicles per video frame
                 cls_id = int(box.cls[0].item())
                 if cls_id not in COCO_VEHICLE_CLASSES:
                     continue
@@ -323,21 +401,24 @@ async def analyze_video(request: Request, file: UploadFile = File(...)):
                 crop = frame[max(0, y1):max(0, y2), max(0, x1):max(0, x2)]
                 if crop.size == 0 or (x2 - x1 < 12) or (y2 - y1 < 12):
                     continue
-                label, _ = classify_crop(crop)
+                crop_in = np.expand_dims(cv2.resize(crop, (128, 128)).astype("float32") / 255.0, axis=0)
+                pred = classifier_model.predict(crop_in, verbose=0)[0]
+                label = CLASS_NAMES[int(np.argmax(pred))]
                 cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
                 cv2.putText(annotated, label, (x1, max(20, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (36, 255, 12), 2)
                 detected = True
+
             if detected:
                 processed_frames += 1
             writer.write(annotated)
 
-            if total_frames % 50 == 0:
-                gc.collect()
+            if total_frames % 25 == 0:
+                trim_memory()
     finally:
         capture.release()
         writer.release()
         source_path.unlink(missing_ok=True)
-        gc.collect()
+        trim_memory()
 
     elapsed_time = time.time() - started
     return {
