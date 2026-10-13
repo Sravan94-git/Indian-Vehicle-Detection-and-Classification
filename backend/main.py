@@ -112,7 +112,22 @@ async def warm_models():
     async def warm_in_background():
         await asyncio.sleep(1)
         try:
-            await asyncio.to_thread(load_models)
+            yolo_m, cls_m = await asyncio.to_thread(load_models)
+            print("[WARMUP] Models loaded. Running warmup inference...")
+
+            # Warm up YOLO JIT with a small dummy image at the same imgsz we use
+            dummy_img = np.zeros((320, 320, 3), dtype=np.uint8)
+            with torch.inference_mode():
+                yolo_m(dummy_img, classes=COCO_VEHICLE_CLASSES, conf=0.25, imgsz=320, verbose=False)
+            trim_memory()
+            print("[WARMUP] YOLO JIT warmup complete.")
+
+            # Warm up TorchScript classifier JIT
+            dummy_crop = torch.zeros(1, 128, 128, 3)
+            with torch.inference_mode():
+                cls_m(dummy_crop)
+            trim_memory()
+            print("[WARMUP] Classifier JIT warmup complete. Ready for requests!")
         except Exception as e:
             print(f"Error warming models: {e}")
 
@@ -145,13 +160,13 @@ def detect_image(image, request):
     yolo_model_instance, classifier_model = load_models()
     height, width = image.shape[:2]
 
-    # 1. Run YOLO detection with strict 640 input resolution and inference mode
+    # 1. Run YOLO detection with 320 input resolution (4x fewer pixels than 640) for speed
     with torch.inference_mode():
         detections = yolo_model_instance(
             image,
             classes=COCO_VEHICLE_CLASSES,
             conf=0.25,
-            imgsz=640,
+            imgsz=320,
             verbose=False,
         )[0]
 
@@ -299,11 +314,11 @@ async def analyze_image(request: Request, file: UploadFile = File(...)):
     if image is None:
         raise HTTPException(status_code=400, detail="The uploaded image could not be read or decoded")
 
-    # Downscale high-resolution images to max dimension 640 to run 4x faster on CPU
+    # Downscale high-resolution images to max dimension 480 (YOLO uses 320 internally)
     h, w = image.shape[:2]
     max_dim = max(h, w)
-    if max_dim > 640:
-        scale = 640.0 / max_dim
+    if max_dim > 480:
+        scale = 480.0 / max_dim
         image = cv2.resize(image, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
 
     # Offload CPU inference to worker thread so event loop never stalls
@@ -367,7 +382,7 @@ async def analyze_video(request: Request, file: UploadFile = File(...)):
                     frame,
                     classes=COCO_VEHICLE_CLASSES,
                     conf=0.25,
-                    imgsz=640,
+                    imgsz=320,
                     verbose=False,
                 )[0]
 
